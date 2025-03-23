@@ -6,9 +6,11 @@ import time
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict
+from fastapi.responses import JSONResponse
 from botocore.config import Config
 from contextlib import asynccontextmanager
 from datetime import datetime
+from botocore.exceptions import ClientError, BotoCoreError
 import uuid
 import aioboto3
 import asyncio
@@ -23,6 +25,7 @@ transcription_data = {}
 
 # Initialize AWS clients
 connect = boto3.client('connect', region_name=os.getenv("AWS_REGION"))
+connect_cl = boto3.client('connect-contact-lens', region_name=os.getenv("AWS_REGION"))
 transcribe = boto3.client('transcribe', region_name=os.getenv("AWS_REGION"))
 
 @asynccontextmanager
@@ -80,11 +83,13 @@ def sanitize_for_json(obj):
     return obj
 
 async def fetch_analysis_segments(contact_id: str):
-    """Fetch real-time analysis segments using the new API"""
+    """Enhanced real-time analysis fetcher with exponential backoff"""
     instance_id = os.getenv("CONNECT_INSTANCE_ID")
     next_token = None
+    retries = 0
+    max_retries = 10
     
-    while True:
+    while retries < max_retries:
         try:
             params = {
                 "InstanceId": instance_id,
@@ -94,30 +99,43 @@ async def fetch_analysis_segments(contact_id: str):
             if next_token:
                 params["NextToken"] = next_token
 
-            response = connect.list_realtime_contact_analysis_segments(**params)
+            response = connect_cl.list_realtime_contact_analysis_segments(**params)
             
-            # Process segments
-            for segment in response.get('Segments', []):
-                if 'Transcript' in segment:
-                    transcript = segment['Transcript']
-                    if contact_id not in transcription_data:
-                        transcription_data[contact_id] = []
-                    transcription_data[contact_id].append({
-                        'content': transcript['Content'],
-                        'timestamp': datetime.now().isoformat(),
-                        'participant': transcript['ParticipantRole']
-                    })
+            # Process segments only if found
+            if 'Segments' in response:
+                for segment in response['Segments']:
+                    if 'Transcript' in segment:
+                        transcript = segment['Transcript']
+                        if contact_id not in transcription_data:
+                            transcription_data[contact_id] = []
+                        transcription_data[contact_id].append({
+                            'content': transcript['Content'],
+                            'timestamp': datetime.now().isoformat(),
+                            'participant': transcript['ParticipantRole'],
+                            'offset': transcript['BeginOffsetMillis']
+                        })
+                print(f"Fetched {len(response['Segments'])} segments for {contact_id}")
             
             next_token = response.get('NextToken')
             if not next_token:
                 break
                 
             await asyncio.sleep(1)
+            retries = 0  # Reset retries on success
             
-        except connect.exceptions.ThrottlingException:
-            await asyncio.sleep(2)
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ResourceNotFoundException':
+                print(f"Data not ready yet for {contact_id}, retrying... ({retries}/{max_retries})")
+                retries += 1
+                await asyncio.sleep(2 ** retries)  # Exponential backoff
+            else:
+                print(f"Client error fetching segments: {str(e)}")
+                break
+        except BotoCoreError as e:
+            print(f"Boto core error: {str(e)}")
+            break
         except Exception as e:
-            print(f"Error fetching segments: {str(e)}")
+            print(f"Unexpected error: {str(e)}")
             break
 
 def poll_contact_attributes(contact_id: str):
@@ -192,8 +210,9 @@ async def start_transcription_process(contact_id: str):
             transcription_sessions[contact_id]['transcript'] += f"[{current_time}] Transcription ended.\n"
 
 # Modify the poll_call_status function to run in an async context
+# Modified poll_call_status to ensure real-time analysis starts
 async def poll_call_status(contact_id: str):
-    """Enhanced status polling with real-time analysis"""
+    """Enhanced status polling with real-time analysis initiation"""
     max_retries = 60
     for _ in range(max_retries):
         try:
@@ -205,10 +224,10 @@ async def poll_call_status(contact_id: str):
             current_status = response.get('ContactStatus', 'INITIATED')
             call_status_store[contact_id] = response
             
-            if current_status in ['CONNECTED', 'IN_PROGRESS']:
-                # Start real-time analysis when call connects
-                if contact_id not in transcription_data:
-                    asyncio.create_task(fetch_analysis_segments(contact_id))
+            # Automatically start transcription when call connects
+            if current_status in ['CONNECTED', 'IN_PROGRESS'] and contact_id not in transcription_data:
+                print(f"Starting real-time analysis for {contact_id}")
+                asyncio.create_task(fetch_analysis_segments(contact_id))
             
             if current_status in ['COMPLETED', 'FAILED']:
                 break
@@ -218,6 +237,15 @@ async def poll_call_status(contact_id: str):
         except Exception as e:
             print(f"Status check error: {str(e)}")
             await asyncio.sleep(2)
+
+# Add this error handler for better logging
+@app.exception_handler(Exception)
+async def generic_exception_handler(request, exc):
+    print(f"Unhandled exception: {str(exc)}")
+    return JSONResponse(
+        status_code=500,
+        content={"message": "Internal server error"}
+    )
 
 @app.post("/initiate-call")
 async def initiate_call(request: CallRequest):
@@ -251,27 +279,54 @@ async def initiate_call(request: CallRequest):
 @app.websocket("/ws/{contact_id}")
 async def websocket_endpoint(websocket: WebSocket, contact_id: str):
     await websocket.accept()
+    poll_task = None
+    
     try:
+        # Start background polling task
+        async def background_poller():
+            while True:
+                try:
+                    await fetch_analysis_segments(contact_id)
+                    status = call_status_store.get(contact_id, {})
+                    if status.get('ContactStatus') in ['COMPLETED', 'FAILED']:
+                        break
+                    await asyncio.sleep(2)
+                except Exception as e:
+                    print(f"Background poll error: {str(e)}")
+                    break
+        
+        poll_task = asyncio.create_task(background_poller())
+
         while True:
+            # Get latest status and transcripts
             status = call_status_store.get(contact_id, {})
             transcripts = transcription_data.get(contact_id, [])
             
+            # Sort transcripts by offset time
+            sorted_transcripts = sorted(transcripts, key=lambda x: x['offset'])
+            
             # Format transcript for display
             formatted_transcript = "\n".join(
-                [f"[{t['timestamp']}] {t['participant']}: {t['content']}" 
-                 for t in transcripts]
+                [f"[{datetime.fromisoformat(t['timestamp']).strftime('%H:%M:%S')}] "
+                 f"{t['participant']}: {t['content']}" 
+                 for t in sorted_transcripts]
             )
             
-            response = sanitize_for_json({
-                **status,
-                'transcript': formatted_transcript,
-                'ivr_connected': status.get('ContactStatus') in ['CONNECTED', 'IN_PROGRESS'],
-                'timestamp': datetime.now().isoformat()
-            })
+            # Prepare response
+            response = {
+                "status": status.get('ContactStatus', 'UNKNOWN'),
+                "transcript": formatted_transcript,
+                "timestamp": datetime.now().isoformat(),
+                "ivr_connected": status.get('ContactStatus') in ['CONNECTED', 'IN_PROGRESS'],
+                "attributes": status.get('Attributes', {})
+            }
             
-            await websocket.send_json(response)
+            # Send updates to client
+            await websocket.send_json(sanitize_for_json(response))
             
-            if status.get('ContactStatus') in ['COMPLETED', 'FAILED']:
+            # Check if call has ended
+            if response["status"] in ['COMPLETED', 'FAILED']:
+                await websocket.send_json({"status": "COMPLETED", "message": "Call ended"})
                 break
                 
             await asyncio.sleep(0.5)
@@ -280,6 +335,11 @@ async def websocket_endpoint(websocket: WebSocket, contact_id: str):
         print("Client disconnected")
     except Exception as e:
         print(f"WebSocket error: {str(e)}")
+    finally:
+        if poll_task:
+            poll_task.cancel()
+        if contact_id in transcription_data:
+            del transcription_data[contact_id]
 
 @app.get("/call-status/{contact_id}")
 async def get_call_status(contact_id: str):

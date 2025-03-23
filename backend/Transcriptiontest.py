@@ -66,8 +66,8 @@ def main():
     print("Please provide the following details to fetch real-time contact analysis segments:\n")
 
     contact_id = input("Enter ContactId: ")
-    instance_id = input("Enter InstanceId: ")
-    max_results = int(input("Enter MaxResults (number of results to fetch): "))
+    instance_id = os.getenv("CONNECT_INSTANCE_ID")
+    max_results = 99
     next_token = input("Enter NextToken (leave empty if none): ")
     if not next_token:
         next_token = None
