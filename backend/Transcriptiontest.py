@@ -34,19 +34,20 @@ def fetch_analysis_segments(contact_id, instance_id, max_results, next_token=Non
 
         # Process the fetched segments
         segments = response.get("Segments", [])
+        print(segments)
         next_token = response.get("NextToken", None)
 
         # Format the result
         result = {
-            "segments": [
-                {
-                    "timestamp": segment['Timestamp'],
-                    "participant": segment['Transcript']['ParticipantRole'],
-                    "content": segment['Transcript']['Content'],
-                }
-                for segment in segments
-            ],
-            "nextToken": next_token
+            # "segments": [
+            #     {
+            #         "timestamp": segment['Timestamp'],
+            #         "participant": segment['Transcript']['ParticipantRole'],
+            #         "content": segment['Transcript']['Content'],
+            #     }
+            #     for segment in segments
+            # ],
+            # "nextToken": next_token
         }
 
         return result

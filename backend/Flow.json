@@ -1,0 +1,74 @@
+{
+  "Version": "2019-10-30",
+  "StartAction": "CheckCallStatus",
+  "Metadata": {
+    "entryPointPosition": { "x": 40, "y": 40 },
+    "ActionMetadata": {
+      "CheckCallStatus": { "position": { "x": 200, "y": 40 } },
+      "EnableAnalytics": { "position": { "x": 200, "y": 160 } },
+      "PlayIVRMessage": { "position": { "x": 200, "y": 280 } },
+      "Disconnect": { "position": { "x": 200, "y": 400 } }
+    },
+    "name": "RealTimeTranscriptionFlow",
+    "description": "Flow for real-time transcription without transfers",
+    "type": "contactFlow"
+  },
+  "Actions": [
+    {
+      "Identifier": "CheckCallStatus",
+      "Type": "CheckOutboundCallStatus",
+      "Parameters": {},
+      "Transitions": {
+        "Conditions": [
+          {
+            "Condition": { "Operator": "Equals", "Operands": ["CallAnswered"] },
+            "NextAction": "EnableAnalytics"
+          }
+        ],
+        "NextAction": "Disconnect",
+        "Errors": []
+      }
+    },
+    {
+      "Identifier": "EnableAnalytics",
+      "Type": "UpdateContactRecordingBehavior",
+      "Parameters": {
+        "RecordingBehavior": {
+          "RecordedParticipants": ["Agent", "Customer"],
+          "IVRRecordingBehavior": "Enabled"
+        },
+        "AnalyticsBehavior": {
+          "Enabled": "True",
+          "AnalyticsLanguage": "en-US",
+          "AnalyticsRedactionBehavior": "Disabled",
+          "AnalyticsRedactionResults": "RedactedAndOriginal",
+          "ChannelConfiguration": {
+            "Voice": { "AnalyticsModes": ["RealTime"] }
+          }
+        }
+      },
+      "Transitions": {
+        "NextAction": "PlayIVRMessage",
+        "Errors": []
+      }
+    },
+    {
+      "Identifier": "PlayIVRMessage",
+      "Type": "PlayPrompt",
+      "Parameters": {
+        "Text": "Welcome to our IVR system. Please wait while we process your request.",
+        "TextToSpeech": { "VoiceId": "Joanna" }
+      },
+      "Transitions": {
+        "NextAction": "Disconnect",
+        "Errors": []
+      }
+    },
+    {
+      "Identifier": "Disconnect",
+      "Type": "DisconnectParticipant",
+      "Parameters": {},
+      "Transitions": {}
+    }
+  ]
+}

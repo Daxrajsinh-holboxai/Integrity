@@ -23,9 +23,30 @@ transcription_sessions = {}
 call_status_store = {}
 transcription_data = {}
 
+# Configure AWS client with custom retry policy
+connect_config = Config(
+    retries={
+        'max_attempts': 5,
+        'mode': 'adaptive',
+        'total_max_attempts': 10,
+    }
+)
+
+connect = boto3.client(
+    "connect",
+    config=connect_config,
+    region_name=os.getenv("AWS_REGION"),
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+)
 # Initialize AWS clients
-connect = boto3.client('connect', region_name=os.getenv("AWS_REGION"))
-connect_cl = boto3.client('connect-contact-lens', region_name=os.getenv("AWS_REGION"))
+connect_cl = boto3.client(
+    'connect-contact-lens',
+    region_name=os.getenv("AWS_REGION"),
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
+)
+
 transcribe = boto3.client('transcribe', region_name=os.getenv("AWS_REGION"))
 
 @asynccontextmanager
@@ -47,23 +68,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure AWS client with custom retry policy
-connect_config = Config(
-    retries={
-        'max_attempts': 5,
-        'mode': 'adaptive',
-        'total_max_attempts': 10,
-    }
-)
-
-connect = boto3.client(
-    "connect",
-    config=connect_config,
-    region_name=os.getenv("AWS_REGION"),
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-)
-
 call_status_store: Dict[str, dict] = {}
 
 # Request Model
@@ -82,6 +86,7 @@ def sanitize_for_json(obj):
         return obj.isoformat()
     return obj
 
+@app.post("/fetch-call-transcript/{contact_id}")
 async def fetch_analysis_segments(contact_id: str):
     """Enhanced real-time analysis fetcher with exponential backoff"""
     instance_id = os.getenv("CONNECT_INSTANCE_ID")
@@ -91,6 +96,7 @@ async def fetch_analysis_segments(contact_id: str):
     
     while retries < max_retries:
         try:
+            
             params = {
                 "InstanceId": instance_id,
                 "ContactId": contact_id,
@@ -98,9 +104,13 @@ async def fetch_analysis_segments(contact_id: str):
             }
             if next_token:
                 params["NextToken"] = next_token
-
-            response = connect_cl.list_realtime_contact_analysis_segments(**params)
             
+            response = connect_cl.list_realtime_contact_analysis_segments(**params)
+            print("Response from real time contact: ", response)
+            segments = response.get("Segments", [])
+            print("Segments: ", segments)
+            next_token = response.get("NextToken", None)
+
             # Process segments only if found
             if 'Segments' in response:
                 for segment in response['Segments']:
@@ -256,6 +266,10 @@ async def initiate_call(request: CallRequest):
             DestinationPhoneNumber=request.phoneNumber,
             SourcePhoneNumber=os.getenv("SOURCE_PHONE_NUMBER"),
             TrafficType='CAMPAIGN',
+            Attributes={  # Critical for transcription
+                "AWSContactLensEnabled": "true",
+                "AWSContactLensBehavior": "ENABLED"
+            }
         )
 
         contact_id = response['ContactId']

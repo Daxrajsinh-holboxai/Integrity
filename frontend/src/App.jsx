@@ -206,7 +206,7 @@ function App() {
       
       <div 
         ref={transcriptRef}
-        className="p-3 bg-gray-100 rounded-lg max-h-48 overflow-y-auto text-sm whitespace-pre-wrap"
+        className="p-3 bg-gray-100 rounded-lg max-h-48 overflow-y-auto text-sm whitespace-pre-wrap text-black"
       >
         {transcript || "Waiting for IVR system to connect..."}
       </div>
