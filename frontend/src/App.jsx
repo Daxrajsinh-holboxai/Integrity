@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import axios from "axios";
+import * as XLSX from "xlsx";
 
 function App() {
   const [number, setNumber] = useState("");
@@ -11,276 +12,279 @@ function App() {
   const [transcript, setTranscript] = useState("");
   const [isConnected, setIsConnected] = useState(false);
   const [wsStatus, setWsStatus] = useState("disconnected");
-  
-  // Reference to WebSocket for cleanup
+  const [excelData, setExcelData] = useState([]);
+  const [activeCall, setActiveCall] = useState(false); // prevent overlapping calls
+
   const wsRef = useRef(null);
-  // Reference to transcript container for auto-scrolling
   const transcriptRef = useRef(null);
 
-  // Auto-scroll transcript to bottom when it updates
+  const statusColors = {
+    INITIATED: "text-yellow-600",
+    QUEUED: "text-yellow-600",
+    CONNECTING: "text-yellow-600",
+    CONNECTED: "text-green-600",
+    FAILED: "text-red-600",
+    COMPLETED: "text-blue-600",
+  };
+
+  const messages = {
+    INITIATED: "Call is being initiated...",
+    QUEUED: "Call is in queue",
+    CONNECTING: "Connecting to IVR system...",
+    CONNECTED: "Connected to IVR system",
+    FAILED: "Call failed",
+    COMPLETED: "Call completed",
+  };
+
   useEffect(() => {
     if (transcriptRef.current) {
       transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
     }
   }, [transcript]);
 
-  // Clean up WebSocket on unmount
   useEffect(() => {
     return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
+      if (wsRef.current) wsRef.current.close();
     };
   }, []);
 
-  const setupWebSocket = (contactId) => {
-    // Close existing connection if any
-    if (wsRef.current) {
-      wsRef.current.close();
-    }
+  const normalizePhone = (phone) => {
+    const digits = phone.replace(/\D/g, "");
+    if (digits.length === 10) return `+1${digits}`;
+    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+    return "";
+  };
 
-    setWsStatus("connecting");
-    console.log("Setting up WebSocket for contact:", contactId);
-    
-    // Create new WebSocket connection
+  const setupWebSocket = (contactId) => {
+    if (wsRef.current) wsRef.current.close();
+
     const newWs = new WebSocket(`ws://localhost:3001/ws/${contactId}`);
     wsRef.current = newWs;
-    
-    // Connection opened
-    newWs.onopen = () => {
-      setWsStatus("connected");
-      console.log("WebSocket connected");
-    };
-    
-    // Listen for messages
+    setWsStatus("connecting");
+
+    newWs.onopen = () => setWsStatus("connected");
+
     newWs.onmessage = (event) => {
       const data = JSON.parse(event.data);
-      
-      // Handle transcript updates
-      if (data.transcript) {
-          setTranscript(data.transcript);
-      }
-      
-      // Update call status
-      if (data.ContactStatus) {
-          setCallStatus(data);
-          
-          // Show connection status
-          if (['CONNECTED', 'IN_PROGRESS'].includes(data.ContactStatus)) {
-              setIsConnected(true);
-              setMessage("Connected to IVR - Transcription active");
-          }
+      if (data.transcript) setTranscript(data.transcript);
 
-          if (['COMPLETED', 'FAILED'].includes(data.status)) {
-            if (wsRef.current) {
-              wsRef.current.close();
-            }
-      
-            if (data.transcript && data.transcript.length > 30) {
-              setMessage("Call completed. Transcript saved.");
-            } else {
-              setMessage("Call completed. No significant transcript available.");
-            }
-          }
-      }
-  };
-    
-    // Handle errors
-    newWs.onerror = (error) => {
-      console.error("WebSocket error:", error);
-      setWsStatus("error");
-      setMessage("Connection error. Please try refreshing the page.");
-    };
-    
-    // Handle connection close
-    newWs.onclose = (event) => {
-      console.log("WebSocket connection closed:", event.code, event.reason);
-      setWsStatus("disconnected");
-      
-      // Only show completion message if we haven't shown an error
-      if (wsStatus !== "error") {
-        if (transcript && transcript.length > 30) {
-          setMessage("Call completed. Transcript saved.");
-        } else {
-          setMessage("Call completed. No significant transcript available.");
+      if (data.ContactStatus) {
+        setCallStatus(data);
+        if (["CONNECTED", "IN_PROGRESS"].includes(data.ContactStatus)) {
+          setIsConnected(true);
+          setMessage("Connected to IVR - Transcription active");
+        }
+
+        if (["COMPLETED", "FAILED"].includes(data.status)) {
+          newWs.close();
+          setActiveCall(false);
+          setContactId(null); // Reset contact ID when call ends
+          setMessage(
+            data.transcript?.length > 30
+              ? "Call completed. Transcript saved."
+              : "Call completed. No significant transcript available."
+          );
         }
       }
+    };
+
+    newWs.onerror = () => {
+      setWsStatus("error");
+      setMessage("Connection error. Try refreshing.");
+      setActiveCall(false);
+    };
+
+    newWs.onclose = () => {
+      setWsStatus("disconnected");
+      setActiveCall(false);
     };
   };
 
   const handleCall = async () => {
-    if (retryDelay > 0) return; // Prevent calls during cooldown
-    
+    if (retryDelay > 0 || !number || activeCall) return;
+
     setLoading(true);
     setMessage("Initiating call...");
-    setCallStatus(null);
-    setRetryDelay(0);
     setTranscript("");
+    setCallStatus(null);
     setIsConnected(false);
     setWsStatus("disconnected");
-
+    setActiveCall(true);
+    setContactId(null); 
+    
     try {
-      // Make API call to initiate the call
       const response = await axios.post("http://localhost:3001/initiate-call", {
         phoneNumber: number,
       });
-      
-      const newContactId = response.data.contact_id;
-      setContactId(newContactId);
-      setMessage(`Call initiated to ${number}. Connecting to IVR...`);
-      
-      // Setup WebSocket for real-time updates
-      setupWebSocket(newContactId);
-      
+
+      const contactId = response.data.contact_id;
+      setContactId(contactId);
+      setupWebSocket(contactId);
+      setMessage(`Call initiated to ${number}. Connecting...`);
     } catch (error) {
-      // Handle rate limiting
-      if (error.response?.status === 429) {
-        const delay = error.response?.data?.detail?.retry_after || 60;
-        setRetryDelay(delay);
-        
-        // Start countdown timer
-        const interval = setInterval(() => {
-          setRetryDelay((prev) => {
-            const newValue = prev - 1;
-            if (newValue <= 0) {
-              clearInterval(interval);
-              return 0;
-            }
-            return newValue;
-          });
-        }, 1000);
-      }
-      
-      setMessage(
-        `Error: ${error.response?.data?.detail?.error || error.message}`
-      );
+      setMessage(`Error: ${error.response?.data?.detail?.error || error.message}`);
+      setActiveCall(false);
     } finally {
       setLoading(false);
     }
   };
 
-  // Generate descriptive status message based on call state
+  const handleExcelUpload = (e) => {
+    const file = e.target.files[0];
+    const reader = new FileReader();
+
+    reader.onload = (evt) => {
+      const wb = XLSX.read(evt.target.result, { type: "binary" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const data = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      setExcelData(data);
+    };
+
+    reader.readAsBinaryString(file);
+  };
+
+  const handleExcelRowClick = (row) => {
+    const raw = row["Payer Phone"] || row.Phone;
+    const normalized = normalizePhone(raw);
+    if (!normalized) {
+      setMessage("Invalid phone number format.");
+      return;
+    }
+    setNumber(normalized);
+  };
+
   const getStatusMessage = () => {
     if (!callStatus) return null;
-    
     const status = callStatus.ContactStatus || callStatus.status;
-    const statusColors = {
-      INITIATED: "text-yellow-600",
-      QUEUED: "text-yellow-600",
-      CONNECTING: "text-yellow-600",
-      CONNECTED: "text-green-600",
-      FAILED: "text-red-600",
-      COMPLETED: "text-blue-600"
-    };
-    
-    const messages = {
-      INITIATED: "Call is being initiated...",
-      QUEUED: "Call is in queue",
-      CONNECTING: "Connecting to IVR system...",
-      CONNECTED: "Connected to IVR system",
-      FAILED: "Call failed",
-      COMPLETED: "Call completed"
-    };
-    
     return (
-      <div className="mt-4 p-3 bg-gray-100 rounded-lg">
+      <div className="mt-4 p-3 bg-gray-100 rounded-lg text-sm text-gray-800">
         <p className={`font-semibold ${statusColors[status] || "text-gray-800"}`}>
           Status: {messages[status] || status}
         </p>
-        
-        {(status === "CONNECTED" || status === "IN_PROGRESS") && (
+        {["CONNECTED", "IN_PROGRESS"].includes(status) && (
           <p className="mt-2 text-green-600">
-            <span className="inline-block h-2 w-2 rounded-full bg-green-600 mr-2"></span>
+            <span className="inline-block h-2 w-2 rounded-full bg-green-600 mr-2" />
             Transcription active
           </p>
         )}
-        
         {callStatus.DisconnectReason && (
-          <p className="mt-2 text-red-500">
-            Reason: {callStatus.DisconnectReason}
-          </p>
+          <p className="mt-2 text-red-500">Reason: {callStatus.DisconnectReason}</p>
         )}
       </div>
     );
   };
 
-  // Display transcript with better formatting
   const transcriptDisplay = () => (
-    <div className="mt-4">
-      <div className="flex justify-between items-center mb-2">
-        <h3 className="font-semibold">Live IVR Transcript:</h3>
-        <span className={`text-xs px-2 py-1 rounded ${
-          isConnected ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-800"
-        }`}>
-          {isConnected ? "Live" : "Waiting for connection"}
-        </span>
-      </div>
-      
-      <div 
+    <div className="mt-4" style={{ gridRow: 'span 1', height: '200px' }}>
+      <h3 className="font-semibold mb-1">Live IVR Transcript:</h3>
+      <div
         ref={transcriptRef}
-        className="p-3 bg-gray-100 rounded-lg max-h-48 overflow-y-auto text-sm whitespace-pre-wrap text-black"
+        className="p-3 bg-gray-100 rounded-lg overflow-y-auto text-sm text-black"
+        style={{ height: '160px' }} // Fixed height
       >
         {transcript || "Waiting for IVR system to connect..."}
       </div>
+      <div className="mt-1 text-xs text-gray-500">WebSocket Status: {wsStatus}</div>
     </div>
   );
 
-  // Dynamic button text based on state
+  const renderExcelTable = () => {
+    if (excelData.length === 0) {
+      return (
+        <div className="h-full flex items-center justify-center">
+          <p className="text-sm text-gray-600">No Excel file uploaded yet.</p>
+        </div>
+      );
+    }
+
+    const headers = Object.keys(excelData[0]);
+
+    return (
+      <div className="h-full overflow-auto">
+        <h2 className="text-lg font-semibold mb-2 text-gray-800">Uploaded Contact List</h2>
+        <table className="w-full border border-gray-300 rounded-lg text-sm bg-white text-gray-800">
+          <thead className="bg-gray-200 sticky top-0 z-10">
+            <tr>
+              {headers.map((header, idx) => (
+                <th key={idx} className="px-4 py-2 border-b font-semibold text-left">
+                  {header}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {excelData.map((row, idx) => (
+              <tr
+                key={idx}
+                className="hover:bg-blue-50 cursor-pointer"
+                onClick={() => handleExcelRowClick(row)}
+              >
+                {headers.map((header, i) => (
+                  <td key={i} className="px-4 py-2 border-b">{row[header]}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
   const buttonText = () => {
-    if (retryDelay > 0) return `Retry available in ${retryDelay}s`;
-    if (loading) return "Initiating Call...";
-    return "Make Call";
+    if (retryDelay > 0) return `Retry in ${retryDelay}s`;
+    return loading ? "Initiating Call..." : "Make Call";
   };
 
   return (
-    <div className="flex justify-center items-center min-h-screen bg-gray-50">
-      <div className="w-full max-w-md p-6 bg-white shadow-lg rounded-lg">
-        <h1 className="text-2xl font-bold text-center text-gray-800 mb-6">
-          Integrity: Call Automation
-        </h1>
+    <div className="grid grid-cols-[40%_60%] h-screen overflow-hidden font-sans">
+      {/* LEFT SIDE - Fixed width */}
+      <div className="p-6 bg-white border-r border-gray-300 text-gray-900 overflow-y-auto">
+        <h1 className="text-2xl font-bold mb-6">Integrity: Call Automation</h1>
 
-        <div className="mb-4">
-          <label htmlFor="phoneNumber" className="block text-sm font-medium text-gray-700 mb-1">
-            Phone Number
-          </label>
+        {/* File upload */}
+        <div className="mb-6">
+          <label className="block text-sm font-medium mb-1">Upload Excel (.xlsx)</label>
           <input
-            id="phoneNumber"
+            type="file"
+            accept=".xlsx, .xls"
+            onChange={handleExcelUpload}
+            className="w-full p-2 border border-gray-300 rounded-lg"
+          />
+        </div>
+
+        {/* Phone input */}
+        <div className="mb-6">
+          <label className="block text-sm font-medium mb-1">Or Enter Phone Number</label>
+          <input
             type="text"
-            className="w-full p-3 border border-gray-300 rounded-lg text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="+1234567890"
             value={number}
             onChange={(e) => setNumber(e.target.value)}
+            className="w-full p-3 border border-gray-300 rounded-lg"
+            placeholder="+1234567890"
           />
         </div>
 
         <button
           onClick={handleCall}
-          disabled={loading || !number || retryDelay > 0}
-          className={`w-full p-3 text-white font-semibold rounded-lg ${
-            loading || retryDelay > 0 || !number
-              ? "bg-gray-400 cursor-not-allowed"
-              : "bg-blue-500 hover:bg-blue-600"
+          disabled={!number || loading}
+          className={`w-full p-3 text-white font-semibold rounded-lg mb-6 ${
+            !number || loading ? "bg-gray-400" : "bg-black hover:bg-gray-800"
           } transition`}
         >
           {buttonText()}
         </button>
 
-        {message && (
-          <div className={`mt-4 p-3 rounded-lg ${
-            message.startsWith("Error")
-              ? "bg-red-100 text-red-700"
-              : "bg-blue-100 text-blue-700"
-          }`}>
-            {message}
-          </div>
-        )}
-        
+        {/* Status messages */}
+        {message && <div className="text-sm mb-4 text-blue-700">{message}</div>}
         {getStatusMessage()}
+
+        {/* Transcript - Fixed height */}
         {transcriptDisplay()}
-        
-        <div className="mt-6 text-xs text-gray-500 text-center">
-          WebSocket Status: {wsStatus}
-        </div>
+      </div>
+
+      {/* RIGHT SIDE */}
+      <div className="p-6 bg-gray-100 overflow-y-auto" style={{ height: '100vh' }}>
+        {renderExcelTable()}
       </div>
     </div>
   );
