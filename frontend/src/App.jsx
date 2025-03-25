@@ -70,6 +70,18 @@ function App() {
               setIsConnected(true);
               setMessage("Connected to IVR - Transcription active");
           }
+
+          if (['COMPLETED', 'FAILED'].includes(data.status)) {
+            if (wsRef.current) {
+              wsRef.current.close();
+            }
+      
+            if (data.transcript && data.transcript.length > 30) {
+              setMessage("Call completed. Transcript saved.");
+            } else {
+              setMessage("Call completed. No significant transcript available.");
+            }
+          }
       }
   };
     
@@ -224,7 +236,7 @@ function App() {
     <div className="flex justify-center items-center min-h-screen bg-gray-50">
       <div className="w-full max-w-md p-6 bg-white shadow-lg rounded-lg">
         <h1 className="text-2xl font-bold text-center text-gray-800 mb-6">
-          Amazon Connect IVR Transcriber
+          Integrity: Call Automation
         </h1>
 
         <div className="mb-4">

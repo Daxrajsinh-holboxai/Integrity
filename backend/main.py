@@ -14,6 +14,7 @@ from botocore.exceptions import ClientError, BotoCoreError
 import uuid
 import aioboto3
 import asyncio
+import hashlib
 
 # Load environment variables
 load_dotenv()
@@ -47,7 +48,11 @@ connect_cl = boto3.client(
     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
 )
 
-transcribe = boto3.client('transcribe', region_name=os.getenv("AWS_REGION"))
+# transcribe = boto3.client('transcribe', region_name=os.getenv("AWS_REGION"))
+
+def hash_segment(content: str) -> str:
+    """Hash a transcript content to detect duplicates."""
+    return hashlib.sha256(content.strip().encode()).hexdigest()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -88,15 +93,14 @@ def sanitize_for_json(obj):
 
 @app.post("/fetch-call-transcript/{contact_id}")
 async def fetch_analysis_segments(contact_id: str):
-    """Enhanced real-time analysis fetcher with exponential backoff"""
     instance_id = os.getenv("CONNECT_INSTANCE_ID")
     next_token = None
     retries = 0
     max_retries = 10
-    
+    seen_hashes = set()
+
     while retries < max_retries:
         try:
-            
             params = {
                 "InstanceId": instance_id,
                 "ContactId": contact_id,
@@ -104,49 +108,65 @@ async def fetch_analysis_segments(contact_id: str):
             }
             if next_token:
                 params["NextToken"] = next_token
-            
-            response = connect_cl.list_realtime_contact_analysis_segments(**params)
-            print("Response from real time contact: ", response)
-            segments = response.get("Segments", [])
-            print("Segments: ", segments)
-            next_token = response.get("NextToken", None)
 
-            # Process segments only if found
-            if 'Segments' in response:
-                for segment in response['Segments']:
-                    if 'Transcript' in segment:
-                        transcript = segment['Transcript']
-                        if contact_id not in transcription_data:
-                            transcription_data[contact_id] = []
-                        transcription_data[contact_id].append({
-                            'content': transcript['Content'],
-                            'timestamp': datetime.now().isoformat(),
-                            'participant': transcript['ParticipantRole'],
-                            'offset': transcript['BeginOffsetMillis']
-                        })
-                print(f"Fetched {len(response['Segments'])} segments for {contact_id}")
-            
-            next_token = response.get('NextToken')
+            response = connect_cl.list_realtime_contact_analysis_segments(**params)
+            segments = response.get("Segments", [])
+            next_token = response.get("NextToken")
+
+            for segment in segments:
+                if 'Transcript' not in segment:
+                    continue
+                transcript = segment['Transcript']
+                content = transcript['Content'].strip()
+
+                # Generate a hash to detect duplicate content
+                content_hash = hash_segment(content)
+
+                if contact_id not in transcription_data:
+                    transcription_data[contact_id] = []
+                    seen_hashes = set()
+                
+                # Avoid duplicate segments by hash
+                if content_hash in seen_hashes:
+                    continue
+
+                seen_hashes.add(content_hash)
+
+                transcription_data[contact_id].append({
+                    'content': content,
+                    'timestamp': datetime.now().isoformat(),
+                    'participant': transcript['ParticipantRole'],
+                    'offset': transcript['BeginOffsetMillis']
+                })
+
+            print(f"Fetched {len(segments)} segments for {contact_id}")
             if not next_token:
                 break
-                
+
             await asyncio.sleep(1)
-            retries = 0  # Reset retries on success
-            
+            retries = 0
+
         except ClientError as e:
             if e.response['Error']['Code'] == 'ResourceNotFoundException':
                 print(f"Data not ready yet for {contact_id}, retrying... ({retries}/{max_retries})")
                 retries += 1
-                await asyncio.sleep(2 ** retries)  # Exponential backoff
+                await asyncio.sleep(2 ** retries)
             else:
-                print(f"Client error fetching segments: {str(e)}")
+                print(f"Client error: {e}")
                 break
-        except BotoCoreError as e:
-            print(f"Boto core error: {str(e)}")
-            break
         except Exception as e:
-            print(f"Unexpected error: {str(e)}")
+            print(f"Unexpected error: {e}")
             break
+
+def clean_transcripts(transcripts):
+    seen = set()
+    cleaned = []
+    for t in transcripts:
+        key = (t['participant'], t['content'].strip())
+        if key not in seen:
+            seen.add(key)
+            cleaned.append(t)
+    return cleaned
 
 def poll_contact_attributes(contact_id: str):
     """Poll contact attributes independently"""
@@ -265,10 +285,10 @@ async def initiate_call(request: CallRequest):
             ContactFlowId=os.getenv("CONTACT_FLOW_ID"),
             DestinationPhoneNumber=request.phoneNumber,
             SourcePhoneNumber=os.getenv("SOURCE_PHONE_NUMBER"),
-            TrafficType='CAMPAIGN',
+            QueueId=os.getenv("QUEUE_ID"),
             Attributes={  # Critical for transcription
                 "AWSContactLensEnabled": "true",
-                "AWSContactLensBehavior": "ENABLED"
+                "LanguageCode": "en-US"
             }
         )
 
@@ -317,7 +337,7 @@ async def websocket_endpoint(websocket: WebSocket, contact_id: str):
             transcripts = transcription_data.get(contact_id, [])
             
             # Sort transcripts by offset time
-            sorted_transcripts = sorted(transcripts, key=lambda x: x['offset'])
+            sorted_transcripts = sorted(clean_transcripts(transcripts), key=lambda x: x['offset'])
             
             # Format transcript for display
             formatted_transcript = "\n".join(
@@ -341,7 +361,14 @@ async def websocket_endpoint(websocket: WebSocket, contact_id: str):
             # Check if call has ended
             if response["status"] in ['COMPLETED', 'FAILED']:
                 await websocket.send_json({"status": "COMPLETED", "message": "Call ended"})
+                
+                if contact_id in transcription_data:
+                    del transcription_data[contact_id]
+                if contact_id in transcription_sessions:
+                    del transcription_sessions[contact_id]
+                
                 break
+
                 
             await asyncio.sleep(0.5)
             
