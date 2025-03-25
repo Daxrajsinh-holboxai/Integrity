@@ -1,3 +1,4 @@
+import json
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 import boto3
@@ -15,6 +16,7 @@ import uuid
 import aioboto3
 import asyncio
 import hashlib
+import re
 
 # Load environment variables
 load_dotenv()
@@ -48,11 +50,27 @@ connect_cl = boto3.client(
     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
 )
 
+bedrock = boto3.client(
+    service_name='bedrock-runtime',
+    region_name=os.getenv("AWS_REGION"),
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
+)
+
+# participant_client = boto3.client(
+#     'connectparticipant',
+#     region_name=os.getenv("AWS_REGION"),
+#     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+#     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
+# )
+
 # transcribe = boto3.client('transcribe', region_name=os.getenv("AWS_REGION"))
 
 def hash_segment(content: str) -> str:
-    """Hash a transcript content to detect duplicates."""
-    return hashlib.sha256(content.strip().encode()).hexdigest()
+    """Generate a hash for content after normalizing whitespace and case."""
+    normalized = " ".join(content.strip().lower().split())
+    return hashlib.sha256(normalized.encode()).hexdigest()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -78,6 +96,7 @@ call_status_store: Dict[str, dict] = {}
 # Request Model
 class CallRequest(BaseModel):
     phoneNumber: str
+    rowData: dict
 
 class CallStatusRequest(BaseModel):
     contact_id: str
@@ -184,6 +203,104 @@ def poll_contact_attributes(contact_id: str):
             print(f"Attribute poll error: {e}")
             break
 
+async def process_ivr_prompt(contact_id: str, ivr_text: str):
+        # Get stored row data
+        row_data = call_status_store[contact_id]['row_data']
+        print(f"Processing IVR prompt with row data: {row_data}")
+        columns = list(row_data.keys())
+        print(f"Available columns: {columns}")
+        
+        # Create LLM prompt
+        prompt = f"""
+            You are a smart assistant that helps answer customer questions based on a given record (row) of data. 
+            You will be provided:
+            - a sentence spoken by the customer,
+            - a record containing row data.
+
+            Your job is to:
+            1. Identify which key in the record best answers the customer's sentence.
+            2. Return a structured JSON with:
+                - "question": the original customer sentence,
+                - "field": the exact key from the record that answers the question,
+                - "value": the value from that key.             
+            3. If customer asks to press a number, then return the response in value "Please enter a number" and return a proper json format mentioned.
+            Remember -> Return ONLY a valid JSON object in the following structure:
+                {{
+                "question": "<customer sentence>",
+                "field": "<exact field name or 'none'>",
+                "value": "<value from the record or 'not found'>"
+                }}  
+
+            If none of the fields are relevant to the customer's question, return:
+            {{"question": "<original>", "field": "none", "value": "not found"}}
+
+            Customer sentence:
+            {ivr_text}
+
+            Record:
+            {json.dumps(row_data, indent=2)}
+            """
+        
+        # Call Titan LLM
+        response = bedrock.invoke_model(
+            modelId='amazon.titan-text-express-v1',
+            body=json.dumps({
+                "inputText": prompt,
+                "textGenerationConfig": {
+                    "maxTokenCount": 100,
+                    "temperature": 0.0,
+                    "topP": 0.9         
+                }
+            })
+        )
+        
+        result = json.loads(response['body'].read())
+        response_text = result['results'][0]['outputText'].strip()
+        print(f"LLM response: {response_text}")
+        try:
+            parsed = json.loads(response_text)
+            
+            field_name = parsed.get("field", "").strip()
+            if field_name.lower() == "none":
+                return {"field": "none", "value": "not found", "question": ivr_text}
+        except json.JSONDecodeError:
+            print(f"LLM output was not valid JSON:\n{response_text}")
+
+            # # Try extracting JSON-looking content from text using regex
+            # match = re.search(r"\{.*?\}", response_text, re.DOTALL)
+            # if match:
+            #     json_str = match.group(0)
+            #     try:
+            #         parsed = json.loads(json_str)
+            #         field_name = parsed.get("field", "").strip()
+            #         if field_name.lower() == "none":
+            #             return {"field": "none", "value": "not found", "question": ivr_text}
+            #         else:
+            #             return parsed
+            #     except Exception as inner_e:
+            #         print(f"Fallback JSON parse failed: {inner_e} | Raw: {json_str}")
+            #         return {"field": "error", "value": "failed to parse", "question": ivr_text}
+            return {"question": ivr_text, "value": response_text, "field": "unknown"}
+
+        
+            # Normalize and match field name
+            field_key_map = {k.strip().lower().replace(" ", "_"): k for k in row_data}
+            normalized_field = field_name.strip().lower().replace(" ", "_")
+
+            if normalized_field in field_key_map:
+                actual_key = field_key_map[normalized_field]
+                return {
+                    "field": actual_key,
+                    "value": row_data[actual_key],
+                    "question": ivr_text
+                }
+            else:
+                return {"field": "unknown", "value": "not found", "question": ivr_text}
+        except Exception as e:
+            print(f"LLM parsing error: {e}, raw response: {response_text}")
+            return {"field": "error", "value": "failed to parse", "question": ivr_text}
+
+
 async def start_transcription_process(contact_id: str):
     """Start transcription with proper async implementation"""
     print(f"Starting transcription process for contact {contact_id}")
@@ -252,7 +369,11 @@ async def poll_call_status(contact_id: str):
             )
             
             current_status = response.get('ContactStatus', 'INITIATED')
-            call_status_store[contact_id] = response
+            # Merge existing data with new response
+            call_status_store[contact_id] = {
+                **call_status_store.get(contact_id, {}),
+                **response
+            }
             
             # Automatically start transcription when call connects
             if current_status in ['CONNECTED', 'IN_PROGRESS'] and contact_id not in transcription_data:
@@ -296,6 +417,7 @@ async def initiate_call(request: CallRequest):
         print(contact_id)
         call_status_store[contact_id] = {
             'status': 'INITIATED',
+            'row_data': request.rowData,
             'ContactStatus': 'INITIATED',
             'timestamp': datetime.now(),
         }
@@ -330,6 +452,8 @@ async def websocket_endpoint(websocket: WebSocket, contact_id: str):
                     break
         
         poll_task = asyncio.create_task(background_poller())
+        processed_prompt_hashes = set()
+
 
         while True:
             # Get latest status and transcripts
@@ -354,6 +478,41 @@ async def websocket_endpoint(websocket: WebSocket, contact_id: str):
                 "ivr_connected": status.get('ContactStatus') in ['CONNECTED', 'IN_PROGRESS'],
                 "attributes": status.get('Attributes', {})
             }
+
+             # Process new IVR prompts
+            for t in sorted_transcripts:
+                if t['participant'] == 'CUSTOMER':
+                    prompt_hash = hash_segment(t['content'])
+                    if prompt_hash in processed_prompt_hashes:
+                        continue
+                    processed_prompt_hashes.add(prompt_hash)
+                    response_value = await process_ivr_prompt(contact_id, t['content'])
+                    if response_value:
+                        try:
+                            # Use Amazon Connect participant API instead
+                            participant_response = connect.get_contact_attributes(
+                                InstanceId=os.getenv("CONNECT_INSTANCE_ID"),
+                                ContactId=contact_id
+                            )
+                            participant_id = participant_response['Attributes'].get('participantId')
+                            
+                            # if participant_id:
+                            #     connect.send_dtmf(
+                            #         InstanceId=os.getenv("CONNECT_INSTANCE_ID"),
+                            #         InitialContactId=contact_id,
+                            #         ParticipantId=participant_id,
+                            #         InputDigits=str(response_value)
+                            #     )
+                        except Exception as e:
+                            print(f"DTMF sending error: {str(e)}")
+                        
+                        response["responseSent"] = {
+                            "timestamp": datetime.now().isoformat(),
+                            "question": response_value["question"],
+                            "field": response_value["field"],
+                            "value": response_value["value"]
+                        }
+
             
             # Send updates to client
             await websocket.send_json(sanitize_for_json(response))
