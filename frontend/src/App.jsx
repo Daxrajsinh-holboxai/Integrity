@@ -14,6 +14,8 @@ function App() {
   const [wsStatus, setWsStatus] = useState("disconnected");
   const [excelData, setExcelData] = useState([]);
   const [activeCall, setActiveCall] = useState(false); // prevent overlapping calls
+  const [selectedRow, setSelectedRow] = useState(null);
+  const [sentResponses, setSentResponses] = useState([]);
 
   const wsRef = useRef(null);
   const transcriptRef = useRef(null);
@@ -65,8 +67,12 @@ function App() {
     newWs.onopen = () => setWsStatus("connected");
 
     newWs.onmessage = (event) => {
+      console.log("WebSocket message:", event.data);
       const data = JSON.parse(event.data);
       if (data.transcript) setTranscript(data.transcript);
+      if (data.responseSent) {
+        setSentResponses(prev => [...prev, data.responseSent]);
+      }
 
       if (data.ContactStatus) {
         setCallStatus(data);
@@ -102,6 +108,10 @@ function App() {
 
   const handleCall = async () => {
     if (retryDelay > 0 || !number || activeCall) return;
+    if (!selectedRow) {
+      setMessage("Please select a row from the Excel sheet first");
+      return;
+    }
 
     setLoading(true);
     setMessage("Initiating call...");
@@ -115,6 +125,7 @@ function App() {
     try {
       const response = await axios.post("http://localhost:3001/initiate-call", {
         phoneNumber: number,
+        rowData: selectedRow
       });
 
       const contactId = response.data.contact_id;
@@ -151,6 +162,7 @@ function App() {
       return;
     }
     setNumber(normalized);
+    setSelectedRow(row); // Store entire selected row
   };
 
   const getStatusMessage = () => {
@@ -280,6 +292,23 @@ function App() {
 
         {/* Transcript - Fixed height */}
         {transcriptDisplay()}
+
+
+        <div className="mt-4 p-3 bg-blue-50 rounded-lg">
+          <h3 className="font-semibold mb-2">Automated Responses:</h3>
+          {sentResponses.length === 0 ? (
+            <p className="text-sm text-gray-600">Waiting for customer questions...</p>
+          ) : (
+            sentResponses.map((res, i) => (
+              <div key={i} className="mb-2 p-2 border border-blue-200 rounded text-sm text-gray-800 bg-white">
+                <div><span className="font-semibold text-blue-600">🗣 Question:</span> {res.question}</div>
+                <div><span className="font-semibold text-green-600">📄 Field:</span> {res.field}</div>
+                <div><span className="font-semibold text-purple-600">✅ Answer:</span> {res.value}</div>
+                <div className="text-xs text-gray-400 mt-1">{res.timestamp}</div>
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
       {/* RIGHT SIDE */}

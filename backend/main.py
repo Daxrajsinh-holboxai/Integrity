@@ -203,102 +203,94 @@ def poll_contact_attributes(contact_id: str):
             print(f"Attribute poll error: {e}")
             break
 
+import json
+
 async def process_ivr_prompt(contact_id: str, ivr_text: str):
-        # Get stored row data
-        row_data = call_status_store[contact_id]['row_data']
-        print(f"Processing IVR prompt with row data: {row_data}")
-        columns = list(row_data.keys())
-        print(f"Available columns: {columns}")
-        
-        # Create LLM prompt
-        prompt = f"""
-            You are a smart assistant that helps answer customer questions based on a given record (row) of data. 
-            You will be provided:
-            - a sentence spoken by the customer,
-            - a record containing row data.
+    # Get stored row data
+    row_data = call_status_store[contact_id]['row_data']
+    print(f"Processing IVR prompt with row data: {row_data}")
+    columns = list(row_data.keys())
+    print(f"Available columns: {columns}")
+    provider_details= {
+        "practice_id": "10040282",
+        "provider_name": "HARMONY OAKS RECOVERY CENTER, LLC",
+        "npi": "1447914288",
+        "tax_id": "843612075",
+    }
+    
+    # Create LLM prompt
+    prompt = f"""
+        You are an assistant that extracts answers from provided data. You will be given three variables:
+        - row_data: A JSON object containing patient details from an Excel file in the form of Key value-pair, key will be column name and value will corresponding value.
+        - ivr_text: A string representing IVR spoken text. This text may ask the caller to provide details or instruct the caller to press a number.
+        - provider_details: A JSON object containing provider details that might be referenced in the IVR questions.
 
-            Your job is to:
-            1. Identify which key in the record best answers the customer's sentence.
-            2. Return a structured JSON with:
-                - "question": the original customer sentence,
-                - "field": the exact key from the record that answers the question,
-                - "value": the value from that key.             
-            3. If customer asks to press a number, then return the response in value "Please enter a number" and return a proper json format mentioned.
-            Remember -> Return ONLY a valid JSON object in the following structure:
-                {{
-                "question": "<customer sentence>",
-                "field": "<exact field name or 'none'>",
-                "value": "<value from the record or 'not found'>"
-                }}  
+        row_data: {json.dumps(row_data)}
+        ivr_text: {ivr_text}
+        provider_details: {json.dumps(provider_details)}
 
-            If none of the fields are relevant to the customer's question, return:
-            {{"question": "<original>", "field": "none", "value": "not found"}}
+        Your task is to determine which field (i.e., column name) from either row_data or provider_details corresponds to the question in segement (i.e. ivr_text), and then return the value from that field.
+        Your response must be in the following JSON structure:
+        {{"value": "values_value", "field": "key_value"}}
+        - The "field" key should contain the column name (from either row_data or provider_details) that is appropriate for the question asked in segement.
+        - The "value" key should contain the value from that column.
+        Special Case:
+        If the IVR segement (i.e. ivr_text) asks to perform any kind of action to press a number, then your response should be:
+        {{"value": "Please enter a number", "field": "number"}}
+    """
 
-            Customer sentence:
-            {ivr_text}
-
-            Record:
-            {json.dumps(row_data, indent=2)}
-            """
-        
-        # Call Titan LLM
+    try:
+        # Call Amazon Titan (Nova Micro) LLM with corrected structure
         response = bedrock.invoke_model(
-            modelId='amazon.titan-text-express-v1',
+            modelId="amazon.nova-micro-v1:0",
+            contentType="application/json",
+            accept="application/json",
             body=json.dumps({
-                "inputText": prompt,
-                "textGenerationConfig": {
-                    "maxTokenCount": 100,
-                    "temperature": 0.0,
-                    "topP": 0.9         
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "text": prompt
+                            }
+                        ]
+                    }
+                ],
+                "inferenceConfig": {
+                    "max_new_tokens": 100,  # Note: Correct key name
                 }
             })
         )
-        
-        result = json.loads(response['body'].read())
-        response_text = result['results'][0]['outputText'].strip()
-        print(f"LLM response: {response_text}")
+
+        print(f"---------------------LLM response: {response}")
+
+        # Read and decode the response
+        response_body = response['body'].read().decode('utf-8')
+        print(f"*************LLM response body: {response_body}")
+        response_data = json.loads(response_body)
+        print(f"LLM raw response: {response_data}")
+
+        # Extract generated text from the correct path
+        message_content = response_data.get('output', {}).get('message', {}).get('content', [])
+        generated_text = message_content[0].get('text', '') if message_content else ''
+        print(f"LLM generated text: {generated_text}")
+
+        # Optionally parse JSON string inside the text, if needed
         try:
-            parsed = json.loads(response_text)
-            
-            field_name = parsed.get("field", "").strip()
-            if field_name.lower() == "none":
-                return {"field": "none", "value": "not found", "question": ivr_text}
+            parsed_output = json.loads(generated_text)
+            value = parsed_output.get("value", "")
+            field = parsed_output.get("field", "unknown")
         except json.JSONDecodeError:
-            print(f"LLM output was not valid JSON:\n{response_text}")
+            value = generated_text
+            field = "unknown"
 
-            # # Try extracting JSON-looking content from text using regex
-            # match = re.search(r"\{.*?\}", response_text, re.DOTALL)
-            # if match:
-            #     json_str = match.group(0)
-            #     try:
-            #         parsed = json.loads(json_str)
-            #         field_name = parsed.get("field", "").strip()
-            #         if field_name.lower() == "none":
-            #             return {"field": "none", "value": "not found", "question": ivr_text}
-            #         else:
-            #             return parsed
-            #     except Exception as inner_e:
-            #         print(f"Fallback JSON parse failed: {inner_e} | Raw: {json_str}")
-            #         return {"field": "error", "value": "failed to parse", "question": ivr_text}
-            return {"question": ivr_text, "value": response_text, "field": "unknown"}
+        return {"question": ivr_text, "value": value, "field": field}
 
-        
-            # Normalize and match field name
-            field_key_map = {k.strip().lower().replace(" ", "_"): k for k in row_data}
-            normalized_field = field_name.strip().lower().replace(" ", "_")
 
-            if normalized_field in field_key_map:
-                actual_key = field_key_map[normalized_field]
-                return {
-                    "field": actual_key,
-                    "value": row_data[actual_key],
-                    "question": ivr_text
-                }
-            else:
-                return {"field": "unknown", "value": "not found", "question": ivr_text}
-        except Exception as e:
-            print(f"LLM parsing error: {e}, raw response: {response_text}")
-            return {"field": "error", "value": "failed to parse", "question": ivr_text}
+    except Exception as e:
+        print(f"LLM invocation error: {str(e)}")
+        return {"question": ivr_text, "value": "Invocation error", "field": "error"}
+
 
 
 async def start_transcription_process(contact_id: str):
