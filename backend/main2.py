@@ -239,8 +239,10 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
         - The "field" key should contain the column name (from either row_data or provider_details) that is appropriate for the question asked in segement.
         - The "value" key should contain the value from that column.
         Special Case:
-        If the IVR segement (i.e. ivr_text) asks to perform any kind of action to press a number, then your response should be:
-        {{"value": "Please enter a number", "field": "number"}}
+        1. If the ivr_text explicitly instructs the caller to perform an action by pressing a key (for example, it includes phrases like "press 1", "press 2", "pound key", etc.), then your response should be:
+           {{"value": "Please enter a number", "field": "number"}}
+        2. If the ivr_text is irrelevant to the provided data or if no matching field can be determined, then your response should be:
+           {{"value": "No matching data found", "field": "unknown"}}
     """
     # ivr_text: {ivr_text}
     try:
