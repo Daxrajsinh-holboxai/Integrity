@@ -17,6 +17,10 @@ import aioboto3
 import asyncio
 import hashlib
 import re
+import openai
+
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
 
 # Load environment variables
 load_dotenv()
@@ -226,7 +230,7 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
         - provider_details: A JSON object containing provider details that might be referenced in the IVR questions.
 
         row_data: {json.dumps(row_data)}
-        ivr_text: {ivr_text}
+        
         provider_details: {json.dumps(provider_details)}
 
         Your task is to determine which field (i.e., column name) from either row_data or provider_details corresponds to the question in segement (i.e. ivr_text), and then return the value from that field.
@@ -238,69 +242,61 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
         If the IVR segement (i.e. ivr_text) asks to perform any kind of action to press a number, then your response should be:
         {{"value": "Please enter a number", "field": "number"}}
     """
-
+    # ivr_text: {ivr_text}
     try:
         # Call Amazon Titan (Nova Micro) LLM with corrected structure
-        response = bedrock.invoke_model(
-            modelId="amazon.nova-micro-v1:0",
-            contentType="application/json",
-            accept="application/json",
-            body=json.dumps({
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "text": prompt
-                            }
-                        ]
-                    }
-                ],
-                "inferenceConfig": {
-                    "max_new_tokens": 100,  # Note: Correct key name
-                }
-            })
+        response = openai.chat.completions.create(
+            model="gpt-3.5-turbo",  # Or gpt-4
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": "IVR_TEXT: " + ivr_text}
+            ]
         )
+
+        generated_text = response.choices[0].message.content
+        print("OpenAI Response:", generated_text)
 
         print(f"---------------------LLM response: {response}")
 
-        # Read and decode the response
-        response_body = response['body'].read().decode('utf-8')
-        print(f"*************LLM response body: {response_body}")
-        response_data = json.loads(response_body)
-        print(f"LLM raw response: {response_data}")
+    #     # Read and decode the response
+    #     response_body = response['body'].read().decode('utf-8')
+    #     print(f"*************LLM response body: {response_body}")
+    #     response_data = json.loads(response_body)
+    #     print(f"LLM raw response: {response_data}")
 
-        # Extract generated text from the correct path
-        message_content = response_data.get('output', {}).get('message', {}).get('content', [])
-        generated_text = message_content[0].get('text', '') if message_content else ''
-        print(f"LLM generated text: {generated_text}")
+    #     # Extract generated text from the correct path
+    #     message_content = response_data.get('output', {}).get('message', {}).get('content', [])
+    #     generated_text = message_content[0].get('text', '') if message_content else ''
+    #     print(f"LLM generated text: {generated_text}")
 
-        # Optionally parse JSON string inside the text, if needed
+    #     # Optionally parse JSON string inside the text, if needed
+    #     try:
+    #         parsed_output = json.loads(generated_text)
+    #         value = parsed_output.get("value", "")
+    #         field = parsed_output.get("field", "unknown")
+    #     except json.JSONDecodeError:
+    #         value = generated_text
+    #         field = "unknown"
+
+    #     return {"question": ivr_text, "value": value, "field": field}
+
+
+    # except Exception as e:
+    #     print(f"LLM invocation error: {str(e)}")
+    #     return {"question": ivr_text, "value": "Invocation error", "field": "error"}
         try:
-            parsed_output = json.loads(generated_text)
-            value = parsed_output.get("value", "")
-            field = parsed_output.get("field", "unknown")
+                parsed_output = json.loads(generated_text)
+                value = parsed_output.get("value", "")
+                field = parsed_output.get("field", "unknown")
         except json.JSONDecodeError:
-            try:
-                match = re.search(r"```json\s*(\{.*?\})\s*```", generated_text, re.DOTALL)
-                if match:
-                    extracted_json = match.group(1)
-                    parsed_output = json.loads(extracted_json)
-                    value = parsed_output.get("value", "")
-                    field = parsed_output.get("field", "unknown")
-                else:
-                    value = generated_text
-                    field = "unknown"
-            except:
-                value = generated_text
-                field = "unknown"
+            value = generated_text
+            field = "unknown"
 
         return {"question": ivr_text, "value": value, "field": field}
 
-
     except Exception as e:
-        print(f"LLM invocation error: {str(e)}")
-        return {"question": ivr_text, "value": "Invocation error", "field": "error"}
+        print(f"OpenAI API error: {e}")
+    return {"question": ivr_text, "value": "Invocation error", "field": "error"}
 
 
 
