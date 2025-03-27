@@ -17,6 +17,10 @@ import aioboto3
 import asyncio
 import hashlib
 import re
+import openai
+
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
 
 # Load environment variables
 load_dotenv()
@@ -226,7 +230,7 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
         - provider_details: A JSON object containing provider details that might be referenced in the IVR questions.
 
         row_data: {json.dumps(row_data)}
-        ivr_text: {ivr_text}
+        
         provider_details: {json.dumps(provider_details)}
 
         Your task is to determine which field (i.e., column name) from either row_data or provider_details corresponds to the question in segement (i.e. ivr_text), and then return the value from that field.
@@ -235,72 +239,68 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
         - The "field" key should contain the column name (from either row_data or provider_details) that is appropriate for the question asked in segement.
         - The "value" key should contain the value from that column.
         Special Case:
-        If the IVR segement (i.e. ivr_text) asks to perform any kind of action to press a number, then your response should be:
-        {{"value": "Please enter a number", "field": "number"}}
+        1. If the ivr_text explicitly instructs the caller to press a key (e.g., 'Press 1 for X', 'Press 2 for Y'), 
+           analyze the IVR options and determine the correct number to press based on the provider or member choice (number suitable for provider is preferable). 
+           Return the number as the 'value'. For example, if the IVR asks to press 1 if you're a provider or press 2 if you're a member, then
+           return {{"value": "1", "field": "press a number"}}."
+        2. If the ivr_text is irrelevant to the provided data or if no matching field can be determined, then your response should be:
+           {{"value": "No matching data found", "field": "unknown"}}
     """
-
+    # ivr_text: {ivr_text}
     try:
         # Call Amazon Titan (Nova Micro) LLM with corrected structure
-        response = bedrock.invoke_model(
-            modelId="amazon.nova-micro-v1:0",
-            contentType="application/json",
-            accept="application/json",
-            body=json.dumps({
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "text": prompt
-                            }
-                        ]
-                    }
-                ],
-                "inferenceConfig": {
-                    "max_new_tokens": 100,  # Note: Correct key name
-                }
-            })
+        response = openai.chat.completions.create(
+            model="gpt-3.5-turbo",  # Or gpt-4
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": "IVR_TEXT: " + ivr_text}
+            ]
         )
+
+        generated_text = response.choices[0].message.content
+        print("OpenAI Response:", generated_text)
 
         print(f"---------------------LLM response: {response}")
 
-        # Read and decode the response
-        response_body = response['body'].read().decode('utf-8')
-        print(f"*************LLM response body: {response_body}")
-        response_data = json.loads(response_body)
-        print(f"LLM raw response: {response_data}")
+    #     # Read and decode the response
+    #     response_body = response['body'].read().decode('utf-8')
+    #     print(f"*************LLM response body: {response_body}")
+    #     response_data = json.loads(response_body)
+    #     print(f"LLM raw response: {response_data}")
 
-        # Extract generated text from the correct path
-        message_content = response_data.get('output', {}).get('message', {}).get('content', [])
-        generated_text = message_content[0].get('text', '') if message_content else ''
-        print(f"LLM generated text: {generated_text}")
+    #     # Extract generated text from the correct path
+    #     message_content = response_data.get('output', {}).get('message', {}).get('content', [])
+    #     generated_text = message_content[0].get('text', '') if message_content else ''
+    #     print(f"LLM generated text: {generated_text}")
 
-        # Optionally parse JSON string inside the text, if needed
+    #     # Optionally parse JSON string inside the text, if needed
+    #     try:
+    #         parsed_output = json.loads(generated_text)
+    #         value = parsed_output.get("value", "")
+    #         field = parsed_output.get("field", "unknown")
+    #     except json.JSONDecodeError:
+    #         value = generated_text
+    #         field = "unknown"
+
+    #     return {"question": ivr_text, "value": value, "field": field}
+
+
+    # except Exception as e:
+    #     print(f"LLM invocation error: {str(e)}")
+    #     return {"question": ivr_text, "value": "Invocation error", "field": "error"}
         try:
-            parsed_output = json.loads(generated_text)
-            value = parsed_output.get("value", "")
-            field = parsed_output.get("field", "unknown")
+                parsed_output = json.loads(generated_text)
+                value = parsed_output.get("value", "")
+                field = parsed_output.get("field", "unknown")
         except json.JSONDecodeError:
-            try:
-                match = re.search(r"```json\s*(\{.*?\})\s*```", generated_text, re.DOTALL)
-                if match:
-                    extracted_json = match.group(1)
-                    parsed_output = json.loads(extracted_json)
-                    value = parsed_output.get("value", "")
-                    field = parsed_output.get("field", "unknown")
-                else:
-                    value = generated_text
-                    field = "unknown"
-            except:
-                value = generated_text
-                field = "unknown"
+            value = generated_text
+            field = "unknown"
 
         return {"question": ivr_text, "value": value, "field": field}
 
-
     except Exception as e:
-        print(f"LLM invocation error: {str(e)}")
-        return {"question": ivr_text, "value": "Invocation error", "field": "error"}
+        print(f"OpenAI API error: {e}")
+    return {"question": ivr_text, "value": "Invocation error", "field": "error"}
 
 
 
@@ -492,22 +492,21 @@ async def websocket_endpoint(websocket: WebSocket, contact_id: str):
                     response_value = await process_ivr_prompt(contact_id, t['content'])
                     if response_value:
                         try:
-                            # Use Amazon Connect participant API instead
-                            participant_response = connect.get_contact_attributes(
-                                InstanceId=os.getenv("CONNECT_INSTANCE_ID"),
-                                ContactId=contact_id
-                            )
-                            participant_id = participant_response['Attributes'].get('participantId')
-                            
-                            # if participant_id:
-                            #     connect.send_dtmf(
-                            #         InstanceId=os.getenv("CONNECT_INSTANCE_ID"),
-                            #         InitialContactId=contact_id,
-                            #         ParticipantId=participant_id,
-                            #         InputDigits=str(response_value)
-                            #     )
+                            if response_value.get("field") == "press a number" and response_value["value"].isdigit():
+                                dtmf_digits = str(response_value.get("value", ""))
+                                if dtmf_digits.isdigit():
+                                    connect.send_dtmf(
+                                        InstanceId=os.getenv("CONNECT_INSTANCE_ID"),
+                                        ContactId=contact_id,
+                                        DtmfDigits=dtmf_digits
+                                    )
+                                    print(f"Successfully sent DTMF: {dtmf_digits}")
+                                else:
+                                    print(f"Invalid DTMF digits: {dtmf_digits}")
+                        except ClientError as e:
+                            print(f"AWS Client Error: {e.response['Error']['Message']}")
                         except Exception as e:
-                            print(f"DTMF sending error: {str(e)}")
+                            print(f"Unexpected error sending DTMF: {str(e)}")
                         
                         response["responseSent"] = {
                             "timestamp": datetime.now().isoformat(),
