@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import * as XLSX from "xlsx";
+import "amazon-connect-streams";
 
 function App() {
   const [number, setNumber] = useState("");
@@ -16,8 +17,12 @@ function App() {
   const [activeCall, setActiveCall] = useState(false); // prevent overlapping calls
   const [selectedRow, setSelectedRow] = useState(null);
   const [sentResponses, setSentResponses] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [activeConnection, setActiveConnection] = useState(null);
+  const [transcriptWs, setTranscriptWs] = useState(null);
+  const [dtmfWs, setDtmfWs] = useState(null);
 
-  const wsRef = useRef(null);
+  const ccpContainerRef = useRef(null);
   const transcriptRef = useRef(null);
 
   const statusColors = {
@@ -37,18 +42,107 @@ function App() {
     FAILED: "Call failed",
     COMPLETED: "Call completed",
   };
+  
+  // Add notification cleanup effect
+useEffect(() => {
+  const interval = setInterval(() => {
+    setNotifications(prev => prev.filter(n => 
+      Date.now() - new Date(n.timestamp) < 5000
+    ));
+  }, 1000);
+  return () => clearInterval(interval);
+}, []);
+
+// Add notification component to render
+const NotificationToast = () => (
+  <div className="fixed top-4 right-4 z-[9999] space-y-2">
+    {notifications.map((notification) => (
+      <div
+        key={notification.id}
+        className="p-3 bg-green-100 border border-green-400 text-green-700 rounded-lg shadow-lg flex items-center"
+      >
+        <span className="mr-2">✅</span>
+        {notification.message}
+      </div>
+    ))}
+  </div>
+);
+
+// Initialize CCP on component mount
+useEffect(() => {
+  let ccpCleanup;
+  
+  const initializeCCP = () => {
+    if (!window.connect || !ccpContainerRef.current) return;
+
+    ccpCleanup = window.connect.core.initCCP(ccpContainerRef.current, {
+      ccpUrl: "https://dax-holbox.awsapps.com/connect/ccp-v2/",
+      loginPopup: true,
+      loginPopupAutoClose: true,
+      softphone: {
+        allowFramedSoftphone: true,
+        disableRingtone: false
+      },
+      pageOptions: {
+        enableAudioDeviceSettings: true,
+        enablePhoneTypeSettings: true
+      },
+      ccpAckTimeout: 10000,
+      ccpLoadTimeout: 30000
+    });
+
+    window.connect.agent((agent) => {
+      agent.onStateChange((agentStateChange) => {
+        console.log("Agent state:", agentStateChange.newState);
+      });
+    });
+
+    window.connect.contact((contact) => {
+      contact.onAccepted(() => {
+        const connection = contact.getAgentConnection();
+        setActiveConnection(connection);
+      });
+      // Monitor connection media status
+    connection.onMediaConnected(() => {
+      console.log("Media connected - DTMF capable");
+    });
+    
+    connection.onMediaDisconnected(() => {
+      console.warn("Media disconnected - DTMF unavailable");
+    });
+      contact.onEnded(() => {
+        setActiveConnection(null);
+      });
+    });
+  };
+
+  // Load streams only once
+  if (!window.connect) {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/amazon-connect-streams@2.18.1/release/connect-streams.min.js';
+    script.onload = initializeCCP;
+    document.body.appendChild(script);
+  } else {
+    initializeCCP();
+  }
+
+  return () => {
+    if (ccpCleanup) {
+      ccpCleanup.unbind();
+      ccpCleanup = null;
+    }
+    if (ccpContainerRef.current) {
+      ccpContainerRef.current.innerHTML = '';
+    }
+  };
+}, []);
+
 
   useEffect(() => {
     if (transcriptRef.current) {
       transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
     }
   }, [transcript]);
-
-  useEffect(() => {
-    return () => {
-      if (wsRef.current) wsRef.current.close();
-    };
-  }, []);
 
   const normalizePhone = (phone) => {
     const digits = phone.replace(/\D/g, "");
@@ -57,54 +151,61 @@ function App() {
     return "";
   };
 
-  const setupWebSocket = (contactId) => {
-    if (wsRef.current) wsRef.current.close();
-
-    const newWs = new WebSocket(`ws://localhost:3001/ws/${contactId}`);
-    wsRef.current = newWs;
-    setWsStatus("connecting");
-
-    newWs.onopen = () => setWsStatus("connected");
-
-    newWs.onmessage = (event) => {
-      console.log("WebSocket message:", event.data);
-      const data = JSON.parse(event.data);
-      if (data.transcript) setTranscript(data.transcript);
-      if (data.responseSent) {
-        setSentResponses(prev => [...prev, data.responseSent]);
+  const setupWebSockets = (contactId) => {
+    // Transcript WebSocket
+    const transcriptWs = new WebSocket(`ws://localhost:3001/ws/transcript/${contactId}`);
+    
+    transcriptWs.onopen = () => {
+      console.log("Connected to transcript WebSocket");
+    };
+  
+    // Listen for messages from the server
+    transcriptWs.onmessage = (event) => {
+      console.log("Received transcript data:", event.data);
+      setTranscript(event.data);  // Update the transcript state
+    };
+  
+    transcriptWs.onerror = (error) => {
+      console.error("WebSocket error:", error);
+    };
+  
+    transcriptWs.onclose = () => {
+      console.log("Transcript WebSocket closed");
+    };
+  
+    setTranscriptWs(transcriptWs);
+  
+    // DTMF WebSocket (This should remain unchanged)
+    const dtmfWs = new WebSocket(`ws://localhost:3001/ws/dtmf/${contactId}`);
+    dtmfWs.onmessage = async (event) => {
+      const digits = event.data;
+      if (activeConnection) {
+        await new Promise((resolve, reject) => {
+          activeConnection.sendDigits(digits, {
+            success: () => {
+              console.log(`Sent DTMF: ${digits}`);
+              resolve();
+            },
+            failure: (err) => {
+              console.error(`DTMF error: ${err}`);
+              reject(err);
+            }
+          });
+        });
       }
-
-      if (data.ContactStatus) {
-        setCallStatus(data);
-        if (["CONNECTED", "IN_PROGRESS"].includes(data.ContactStatus)) {
-          setIsConnected(true);
-          setMessage("Connected to IVR - Transcription active");
-        }
-
-        if (["COMPLETED", "FAILED"].includes(data.status)) {
-          newWs.close();
-          setActiveCall(false);
-          setContactId(null); // Reset contact ID when call ends
-          setMessage(
-            data.transcript?.length > 30
-              ? "Call completed. Transcript saved."
-              : "Call completed. No significant transcript available."
-          );
-        }
-      }
     };
-
-    newWs.onerror = () => {
-      setWsStatus("error");
-      setMessage("Connection error. Try refreshing.");
-      setActiveCall(false);
-    };
-
-    newWs.onclose = () => {
-      setWsStatus("disconnected");
-      setActiveCall(false);
-    };
+  
+    setDtmfWs(dtmfWs);
   };
+  
+  // Cleanup WebSockets
+  useEffect(() => {
+    return () => {
+      if (transcriptWs) transcriptWs.close();
+      if (dtmfWs) dtmfWs.close();
+    };
+  }, [transcriptWs, dtmfWs]);
+  
 
   const handleCall = async () => {
     if (retryDelay > 0 || !number || activeCall) return;
@@ -130,7 +231,7 @@ function App() {
 
       const contactId = response.data.contact_id;
       setContactId(contactId);
-      setupWebSocket(contactId);
+      setupWebSockets(contactId);
       setMessage(`Call initiated to ${number}. Connecting...`);
     } catch (error) {
       setMessage(`Error: ${error.response?.data?.detail?.error || error.message}`);
@@ -249,6 +350,7 @@ function App() {
 
   return (
     <div className="grid grid-cols-[40%_60%] h-screen overflow-hidden font-sans">
+      <NotificationToast />
       {/* LEFT SIDE - Fixed width */}
       <div className="p-6 bg-white border-r border-gray-300 text-gray-900 overflow-y-auto">
         <h1 className="text-2xl font-bold mb-6">Integrity: Call Automation</h1>
@@ -315,6 +417,37 @@ function App() {
       <div className="p-6 bg-gray-100 overflow-y-auto" style={{ height: '100vh' }}>
         {renderExcelTable()}
       </div>
+      <div className="mt-4 p-3 bg-blue-50 rounded-lg">
+  <h3 className="font-semibold mb-2">Automated Responses:</h3>
+  {sentResponses.length === 0 ? (
+    <p className="text-sm text-gray-600">Waiting for customer questions...</p>
+  ) : (
+    sentResponses.map((res, i) => (
+      <div key={i} className="mb-2 p-2 border border-blue-200 rounded text-sm text-gray-800 bg-white">
+                <div><span className="font-semibold text-blue-600">🗣 Question:</span> {res.question}</div>
+                <div><span className="font-semibold text-green-600">📄 Field:</span> {res.field}</div>
+                <div><span className="font-semibold text-purple-600">✅ Answer:</span> {res.value}</div>
+                <div className="text-xs text-gray-400 mt-1">{res.timestamp}</div>
+              </div>
+    ))
+  )}
+</div>
+
+      <div 
+      ref={ccpContainerRef} 
+      style={{
+        width: "340px", 
+        height: "600px",
+        position: "fixed",
+        bottom: "20px",
+        right: "20px",
+        border: "1px solid #ccc",
+        zIndex: 1000,
+        backgroundColor: "white",
+        borderRadius: "4px",
+        boxShadow: "0 2px 10px rgba(0,0,0,0.1)"
+      }} 
+    />
     </div>
   );
 }
