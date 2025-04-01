@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import axios from "axios";
 import * as XLSX from "xlsx";
-import "amazon-connect-streams";
+import CustomCCP from "./CustomCCP";
 
 function App() {
   const [number, setNumber] = useState("");
@@ -19,10 +19,9 @@ function App() {
   const [sentResponses, setSentResponses] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [activeConnection, setActiveConnection] = useState(null);
-  const [transcriptWs, setTranscriptWs] = useState(null);
-  const [dtmfWs, setDtmfWs] = useState(null);
 
-  const ccpContainerRef = useRef(null);
+
+  const wsRef = useRef(null);
   const transcriptRef = useRef(null);
 
   const statusColors = {
@@ -42,7 +41,19 @@ function App() {
     FAILED: "Call failed",
     COMPLETED: "Call completed",
   };
-  
+
+  useEffect(() => {
+    if (transcriptRef.current) {
+      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+    }
+  }, [transcript]);
+
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) wsRef.current.close();
+    };
+  }, []);
+
   // Add notification cleanup effect
 useEffect(() => {
   const interval = setInterval(() => {
@@ -68,81 +79,10 @@ const NotificationToast = () => (
   </div>
 );
 
-// Initialize CCP on component mount
-useEffect(() => {
-  let ccpCleanup;
-  
-  const initializeCCP = () => {
-    if (!window.connect || !ccpContainerRef.current) return;
-
-    ccpCleanup = window.connect.core.initCCP(ccpContainerRef.current, {
-      ccpUrl: "https://dax-holbox.awsapps.com/connect/ccp-v2/",
-      loginPopup: true,
-      loginPopupAutoClose: true,
-      softphone: {
-        allowFramedSoftphone: true,
-        disableRingtone: false
-      },
-      pageOptions: {
-        enableAudioDeviceSettings: true,
-        enablePhoneTypeSettings: true
-      },
-      ccpAckTimeout: 10000,
-      ccpLoadTimeout: 30000
-    });
-
-    window.connect.agent((agent) => {
-      agent.onStateChange((agentStateChange) => {
-        console.log("Agent state:", agentStateChange.newState);
-      });
-    });
-
-    window.connect.contact((contact) => {
-      contact.onAccepted(() => {
-        const connection = contact.getAgentConnection();
-        setActiveConnection(connection);
-      });
-      // Monitor connection media status
-    connection.onMediaConnected(() => {
-      console.log("Media connected - DTMF capable");
-    });
-    
-    connection.onMediaDisconnected(() => {
-      console.warn("Media disconnected - DTMF unavailable");
-    });
-      contact.onEnded(() => {
-        setActiveConnection(null);
-      });
-    });
-  };
-
-  // Load streams only once
-  if (!window.connect) {
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/amazon-connect-streams@2.18.1/release/connect-streams.min.js';
-    script.onload = initializeCCP;
-    document.body.appendChild(script);
-  } else {
-    initializeCCP();
-  }
-
-  return () => {
-    if (ccpCleanup) {
-      ccpCleanup.unbind();
-      ccpCleanup = null;
-    }
-    if (ccpContainerRef.current) {
-      ccpContainerRef.current.innerHTML = '';
-    }
-  };
+// Memoize the callback
+const handleSetActiveConnection = useCallback((connection) => {
+  setActiveConnection(connection);
 }, []);
-
-
-  useEffect(() => {
-    if (transcriptRef.current) {
-      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
-    }
-  }, [transcript]);
 
   const normalizePhone = (phone) => {
     const digits = phone.replace(/\D/g, "");
@@ -151,61 +91,54 @@ useEffect(() => {
     return "";
   };
 
-  const setupWebSockets = (contactId) => {
-    // Transcript WebSocket
-    const transcriptWs = new WebSocket(`ws://localhost:3001/ws/transcript/${contactId}`);
-    
-    transcriptWs.onopen = () => {
-      console.log("Connected to transcript WebSocket");
-    };
-  
-    // Listen for messages from the server
-    transcriptWs.onmessage = (event) => {
-      console.log("Received transcript data:", event.data);
-      setTranscript(event.data);  // Update the transcript state
-    };
-  
-    transcriptWs.onerror = (error) => {
-      console.error("WebSocket error:", error);
-    };
-  
-    transcriptWs.onclose = () => {
-      console.log("Transcript WebSocket closed");
-    };
-  
-    setTranscriptWs(transcriptWs);
-  
-    // DTMF WebSocket (This should remain unchanged)
-    const dtmfWs = new WebSocket(`ws://localhost:3001/ws/dtmf/${contactId}`);
-    dtmfWs.onmessage = async (event) => {
-      const digits = event.data;
-      if (activeConnection) {
-        await new Promise((resolve, reject) => {
-          activeConnection.sendDigits(digits, {
-            success: () => {
-              console.log(`Sent DTMF: ${digits}`);
-              resolve();
-            },
-            failure: (err) => {
-              console.error(`DTMF error: ${err}`);
-              reject(err);
-            }
-          });
-        });
+  const setupWebSocket = (contactId) => {
+    if (wsRef.current) wsRef.current.close();
+
+    const newWs = new WebSocket(`ws://localhost:3001/ws/${contactId}`);
+    wsRef.current = newWs;
+    setWsStatus("connecting");
+
+    newWs.onopen = () => setWsStatus("connected");
+
+    newWs.onmessage = (event) => {
+      console.log("WebSocket message:", event.data);
+      const data = JSON.parse(event.data);
+      if (data.transcript) setTranscript(data.transcript);
+      if (data.responseSent) {
+        setSentResponses(prev => [...prev, data.responseSent]);
+      }
+
+      if (data.ContactStatus) {
+        setCallStatus(data);
+        if (["CONNECTED", "IN_PROGRESS"].includes(data.ContactStatus)) {
+          setIsConnected(true);
+          setMessage("Connected to IVR - Transcription active");
+        }
+
+        if (["COMPLETED", "FAILED"].includes(data.status)) {
+          newWs.close();
+          setActiveCall(false);
+          setContactId(null); // Reset contact ID when call ends
+          setMessage(
+            data.transcript?.length > 30
+              ? "Call completed. Transcript saved."
+              : "Call completed. No significant transcript available."
+          );
+        }
       }
     };
-  
-    setDtmfWs(dtmfWs);
-  };
-  
-  // Cleanup WebSockets
-  useEffect(() => {
-    return () => {
-      if (transcriptWs) transcriptWs.close();
-      if (dtmfWs) dtmfWs.close();
+
+    newWs.onerror = () => {
+      setWsStatus("error");
+      setMessage("Connection error. Try refreshing.");
+      setActiveCall(false);
     };
-  }, [transcriptWs, dtmfWs]);
-  
+
+    newWs.onclose = () => {
+      setWsStatus("disconnected");
+      setActiveCall(false);
+    };
+  };
 
   const handleCall = async () => {
     if (retryDelay > 0 || !number || activeCall) return;
@@ -231,7 +164,7 @@ useEffect(() => {
 
       const contactId = response.data.contact_id;
       setContactId(contactId);
-      setupWebSockets(contactId);
+      setupWebSocket(contactId);
       setMessage(`Call initiated to ${number}. Connecting...`);
     } catch (error) {
       setMessage(`Error: ${error.response?.data?.detail?.error || error.message}`);
@@ -414,40 +347,11 @@ useEffect(() => {
       </div>
 
       {/* RIGHT SIDE */}
+      <CustomCCP setActiveConnection={handleSetActiveConnection} />
+
       <div className="p-6 bg-gray-100 overflow-y-auto" style={{ height: '100vh' }}>
         {renderExcelTable()}
       </div>
-      <div className="mt-4 p-3 bg-blue-50 rounded-lg">
-  <h3 className="font-semibold mb-2">Automated Responses:</h3>
-  {sentResponses.length === 0 ? (
-    <p className="text-sm text-gray-600">Waiting for customer questions...</p>
-  ) : (
-    sentResponses.map((res, i) => (
-      <div key={i} className="mb-2 p-2 border border-blue-200 rounded text-sm text-gray-800 bg-white">
-                <div><span className="font-semibold text-blue-600">🗣 Question:</span> {res.question}</div>
-                <div><span className="font-semibold text-green-600">📄 Field:</span> {res.field}</div>
-                <div><span className="font-semibold text-purple-600">✅ Answer:</span> {res.value}</div>
-                <div className="text-xs text-gray-400 mt-1">{res.timestamp}</div>
-              </div>
-    ))
-  )}
-</div>
-
-      <div 
-      ref={ccpContainerRef} 
-      style={{
-        width: "340px", 
-        height: "600px",
-        position: "fixed",
-        bottom: "20px",
-        right: "20px",
-        border: "1px solid #ccc",
-        zIndex: 1000,
-        backgroundColor: "white",
-        borderRadius: "4px",
-        boxShadow: "0 2px 10px rgba(0,0,0,0.1)"
-      }} 
-    />
     </div>
   );
 }
