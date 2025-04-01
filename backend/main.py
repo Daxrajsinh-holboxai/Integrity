@@ -303,62 +303,6 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
     return {"question": ivr_text, "value": "Invocation error", "field": "error"}
 
 
-
-async def start_transcription_process(contact_id: str):
-    """Start transcription with proper async implementation"""
-    print(f"Starting transcription process for contact {contact_id}")
-    
-    # Check if we already have a session for this contact
-    if contact_id in transcription_sessions:
-        print(f"Transcription session already exists for {contact_id}")
-        return
-    
-    # Create a placeholder for the transcript
-    transcription_sessions[contact_id] = {
-        'transcript': 'Initializing transcription...\n',
-        'status': 'starting'
-    }
-    
-    try:
-        # In a real implementation, you would connect to the Amazon Connect 
-        # voice stream here and send it to Amazon Transcribe.
-        # For now, let's simulate transcription with placeholder text
-        # to fix the immediate issues
-        
-        # Mark the session as active
-        transcription_sessions[contact_id]['status'] = 'active'
-        
-        # Simulate IVR messages with timestamps
-        await asyncio.sleep(2)
-        current_time = datetime.now().strftime("%H:%M:%S")
-        transcription_sessions[contact_id]['transcript'] += f"[{current_time}] IVR: Thank you for calling. Your call is important to us.\n"
-        
-        await asyncio.sleep(3)
-        current_time = datetime.now().strftime("%H:%M:%S")
-        transcription_sessions[contact_id]['transcript'] += f"[{current_time}] IVR: Please wait while we connect you to our system.\n"
-        
-        await asyncio.sleep(3)
-        current_time = datetime.now().strftime("%H:%M:%S")
-        transcription_sessions[contact_id]['transcript'] += f"[{current_time}] IVR: For quality and training purposes, this call may be recorded.\n"
-        
-        # Keep the transcription session active until the call ends
-        call_active = True
-        while call_active:
-            status = call_status_store.get(contact_id, {}).get('ContactStatus')
-            if status in ['COMPLETED', 'FAILED', None]:
-                call_active = False
-            await asyncio.sleep(1)
-            
-    except Exception as e:
-        print(f"Transcription error: {str(e)}")
-        transcription_sessions[contact_id]['transcript'] += f"Error in transcription: {str(e)}\n"
-    finally:
-        # Mark the session as complete but keep the transcript
-        if contact_id in transcription_sessions:
-            transcription_sessions[contact_id]['status'] = 'completed'
-            current_time = datetime.now().strftime("%H:%M:%S")
-            transcription_sessions[contact_id]['transcript'] += f"[{current_time}] Transcription ended.\n"
-
 # Modify the poll_call_status function to run in an async context
 # Modified poll_call_status to ensure real-time analysis starts
 async def poll_call_status(contact_id: str):
@@ -495,12 +439,13 @@ async def websocket_endpoint(websocket: WebSocket, contact_id: str):
                             if response_value.get("field") == "press a number" and response_value["value"].isdigit():
                                 dtmf_digits = str(response_value.get("value", ""))
                                 if dtmf_digits.isdigit():
-                                    connect.send_dtmf(
-                                        InstanceId=os.getenv("CONNECT_INSTANCE_ID"),
-                                        ContactId=contact_id,
-                                        DtmfDigits=dtmf_digits
-                                    )
-                                    print(f"Successfully sent DTMF: {dtmf_digits}")
+                                    response["responseSent"] = {
+                                        "timestamp": datetime.now().isoformat(),
+                                        "question": response_value["question"],
+                                        "field": "press a number",
+                                        "value": dtmf_digits
+                                    }
+                                    print(f"Triggering DTMF send for: {dtmf_digits}")
                                 else:
                                     print(f"Invalid DTMF digits: {dtmf_digits}")
                         except ClientError as e:

@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import axios from "axios";
 import * as XLSX from "xlsx";
-import CustomCCP from "./CustomCCP";
+import "amazon-connect-streams";
+// import CustomCCP from "./CustomCCP";
 
 function App() {
   const [number, setNumber] = useState("");
@@ -19,11 +20,79 @@ function App() {
   const [sentResponses, setSentResponses] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [activeConnection, setActiveConnection] = useState(null);
+  const ccpContainerRef = useRef(null);
+  const mediaConnected = useRef(false);
+  // const connectionRef = useRef(null);
+  const [agent, setAgent] = useState(null);
 
+
+  // Initialize CCP on component mount
+  // Initialize CCP
+  useEffect(() => {
+    if (ccpContainerRef.current && !window.connect) {
+      const script = document.createElement("script");
+      script.src = "https://cdn.jsdelivr.net/npm/amazon-connect-streams@2.18.1/release/connect-streams.min.js";
+      script.onload = () => initializeCCP();
+      document.body.appendChild(script);
+    } else if (window.connect) {
+      initializeCCP();
+    }
+  }, []);
+
+  const initializeCCP = () => {
+    connect.core.initCCP(ccpContainerRef.current, {
+      ccpUrl: "https://dax-holbox.awsapps.com/connect/ccp-v2/",
+      loginPopup: true,
+      softphone: {
+        allowFramedSoftphone: true
+      }
+    });
+
+    // Subscribe to agent events
+    connect.agent((agent) => {
+      setAgent(agent);
+      
+      agent.onContactPending((contact) => {
+        const connection = contact.getConnections().find(
+          c => c.getType() === connect.ConnectionType.OUTBOUND
+        );
+        
+        if (connection) {
+          setActiveConnection(connection);
+          connection.onConnectionEvent(({ eventType }) => {
+            if (eventType === connect.ConnectionEventType.CONNECTED) {
+              mediaConnected.current = true;
+            }
+            if (eventType === connect.ConnectionEventType.DISCONNECTED) {
+              mediaConnected.current = false;
+              setActiveConnection(null);
+            }
+          });
+        }
+      });
+    });
+  };
+
+  // DTMF Sending Function
+  const sendDTMFDigits = useCallback((digits) => {
+    if (!activeConnection || !mediaConnected.current) {
+      addNotification("Cannot send DTMF - no active call", 'error');
+      return false;
+    }
+    
+    try {
+      activeConnection.sendDigits(digits);
+      addNotification(`Sent DTMF: ${digits}`, 'success');
+      return true;
+    } catch (error) {
+      addNotification(`DTMF failed: ${error.message}`, 'error');
+      return false;
+    }
+  }, [activeConnection]);
 
   const wsRef = useRef(null);
   const transcriptRef = useRef(null);
-
+  
   const statusColors = {
     INITIATED: "text-yellow-600",
     QUEUED: "text-yellow-600",
@@ -54,6 +123,38 @@ function App() {
     };
   }, []);
 
+// Modify addNotification to prevent state overwrites
+const addNotification = useCallback((message, type = 'success') => {
+  setNotifications(prev => [
+    ...prev.filter(n => Date.now() - n.id < 5000),
+    {
+      id: Date.now(),
+      message,
+      type,
+      timestamp: Date.now()
+    }
+  ]);
+}, []);
+
+  // Function to handle DTMF sending from backend
+  // const handleSendDTMF = async (digits) => {
+
+  //   // if (!sendDTMFFunction) return false;
+  //   try {
+  //     console.log("Sending DTMF:", digits);
+      
+  //     const success = sendDTMFFunction(digits);
+  //     if (success) {
+  //       addNotification(`Sent DTMF: ${digits}`);
+  //       return true;
+  //     }
+  //     return false;
+  //   } catch (error) {
+  //     addNotification(`DTMF Failed: ${error.message}`, 'error');
+  //     return false;
+  //   }
+  // };
+
   // Add notification cleanup effect
 useEffect(() => {
   const interval = setInterval(() => {
@@ -70,9 +171,15 @@ const NotificationToast = () => (
     {notifications.map((notification) => (
       <div
         key={notification.id}
-        className="p-3 bg-green-100 border border-green-400 text-green-700 rounded-lg shadow-lg flex items-center"
+        className={`p-3 border rounded-lg shadow-lg flex items-center ${
+          notification.type === 'error' 
+            ? 'bg-red-100 border-red-400 text-red-700' 
+            : 'bg-green-100 border-green-400 text-green-700'
+        }`}
       >
-        <span className="mr-2">✅</span>
+        <span className="mr-2">
+          {notification.type === 'error' ? '❌' : '✅'}
+        </span>
         {notification.message}
       </div>
     ))}
@@ -101,11 +208,21 @@ const handleSetActiveConnection = useCallback((connection) => {
     newWs.onopen = () => setWsStatus("connected");
 
     newWs.onmessage = (event) => {
-      console.log("WebSocket message:", event.data);
+      // console.log("WebSocket message:", event.data);
       const data = JSON.parse(event.data);
       if (data.transcript) setTranscript(data.transcript);
       if (data.responseSent) {
         setSentResponses(prev => [...prev, data.responseSent]);
+
+        // Check if we need to send DTMF
+        // console.log("Response sent:", data.responseSent); 
+        if (data.responseSent.field === "press a number") {
+            console.log("DTMF condition true:", data.responseSent.value);
+          // handleSendDTMF(data.responseSent.value);
+          // notifications(`Response sent: ${data.responseSent.value}`);
+          sendDTMFDigits(data.responseSent.value);
+          console.log("DTMF sent:", data.responseSent.value);
+        }
       }
 
       if (data.ContactStatus) {
@@ -138,6 +255,11 @@ const handleSetActiveConnection = useCallback((connection) => {
       setWsStatus("disconnected");
       setActiveCall(false);
     };
+    newWs.onclose = () => {
+    setWsStatus("disconnected");
+    setActiveCall(false);
+    wsRef.current = null;  // Clear the reference
+  };
   };
 
   const handleCall = async () => {
@@ -347,7 +469,21 @@ const handleSetActiveConnection = useCallback((connection) => {
       </div>
 
       {/* RIGHT SIDE */}
-      <CustomCCP setActiveConnection={handleSetActiveConnection} />
+      <div
+      ref={ccpContainerRef}
+      style={{
+        width: "340px",
+        height: "600px",
+        position: "fixed",
+        bottom: "20px",
+        right: "20px",
+        border: "1px solid #ccc",
+        zIndex: 1000,
+        backgroundColor: "white",
+        borderRadius: "4px",
+        boxShadow: "0 2px 10px rgba(0,0,0,0.1)"
+      }}
+    />
 
       <div className="p-6 bg-gray-100 overflow-y-auto" style={{ height: '100vh' }}>
         {renderExcelTable()}
