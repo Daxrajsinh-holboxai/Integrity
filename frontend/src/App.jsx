@@ -21,74 +21,9 @@ function App() {
   const [notifications, setNotifications] = useState([]);
   const [activeConnection, setActiveConnection] = useState(null);
   const ccpContainerRef = useRef(null);
-  const mediaConnected = useRef(false);
-  // const connectionRef = useRef(null);
   const [agent, setAgent] = useState(null);
-
-
-  // Initialize CCP on component mount
-  // Initialize CCP
-  useEffect(() => {
-    if (ccpContainerRef.current && !window.connect) {
-      const script = document.createElement("script");
-      script.src = "https://cdn.jsdelivr.net/npm/amazon-connect-streams@2.18.1/release/connect-streams.min.js";
-      script.onload = () => initializeCCP();
-      document.body.appendChild(script);
-    } else if (window.connect) {
-      initializeCCP();
-    }
-  }, []);
-
-  const initializeCCP = () => {
-    connect.core.initCCP(ccpContainerRef.current, {
-      ccpUrl: "https://dax-holbox.awsapps.com/connect/ccp-v2/",
-      loginPopup: true,
-      softphone: {
-        allowFramedSoftphone: true
-      }
-    });
-
-    // Subscribe to agent events
-    connect.agent((agent) => {
-      setAgent(agent);
-      
-      agent.onContactPending((contact) => {
-        const connection = contact.getConnections().find(
-          c => c.getType() === connect.ConnectionType.OUTBOUND
-        );
-        
-        if (connection) {
-          setActiveConnection(connection);
-          connection.onConnectionEvent(({ eventType }) => {
-            if (eventType === connect.ConnectionEventType.CONNECTED) {
-              mediaConnected.current = true;
-            }
-            if (eventType === connect.ConnectionEventType.DISCONNECTED) {
-              mediaConnected.current = false;
-              setActiveConnection(null);
-            }
-          });
-        }
-      });
-    });
-  };
-
-  // DTMF Sending Function
-  const sendDTMFDigits = useCallback((digits) => {
-    if (!activeConnection || !mediaConnected.current) {
-      addNotification("Cannot send DTMF - no active call", 'error');
-      return false;
-    }
-    
-    try {
-      activeConnection.sendDigits(digits);
-      addNotification(`Sent DTMF: ${digits}`, 'success');
-      return true;
-    } catch (error) {
-      addNotification(`DTMF failed: ${error.message}`, 'error');
-      return false;
-    }
-  }, [activeConnection]);
+  const [ccpLoaded, setCcpLoaded] = useState(false);
+  const activeConnectionRef = useRef(null);
 
   const wsRef = useRef(null);
   const transcriptRef = useRef(null);
@@ -123,6 +58,112 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let ccpCleanup = null;
+  
+    const initializeCCP = () => {
+      if (!window.connect || !ccpContainerRef.current) return;
+  
+      try {
+        ccpCleanup = window.connect.core.initCCP(ccpContainerRef.current, {
+          ccpUrl: "https://dax-holbox.awsapps.com/connect/ccp-v2/",
+          loginPopup: true,
+          softphone: {
+            allowFramedSoftphone: true,
+            disableRingtone: false
+          },
+        });
+  
+        // Agent callback
+        window.connect.agent((agent) => {
+          setAgent(agent);
+          agent.onStateChange((newState) => {
+            console.log("Agent state changed:", newState);
+          });
+        });
+  
+        // Contact callback
+        window.connect.contact((contact) => {
+          console.log("New contact received:", contact);
+  
+          contact.onAccepted(() => {
+            addNotification("Contact accepted");
+            const conn = contact.getInitialConnection();
+            if (conn) {
+              activeConnectionRef.current = conn;
+              console.log("Connection obtained:", conn);
+              addNotification("Connection established");
+    
+              // Wait for media connection before setting active
+              conn.onMediaConnected(() => {
+                console.log("Media connected - Ready for DTMF");
+                // setActiveConnection(conn);
+                activeConnectionRef.current = conn;
+                addNotification("Media connected - DTMF enabled");
+                
+                // Verify DTMF support
+                const mediaInfo = conn.getMediaInfo();
+                console.log("Media capabilities:", mediaInfo);
+                if (!mediaInfo?.dtmfSupported) {
+                  addNotification("DTMF not supported in this call", "error");
+                }
+              });
+    
+              // Handle connection state changes
+              conn.onConnected(() => {
+                console.log("Connection fully established");
+              });
+            // else addNotification("Connection not fully established");
+            // setActiveConnection(conn);
+            
+            }
+          });
+          conn.onDisconnected(() => {
+            activeConnectionRef.current = null;
+          });
+          contact.onEnded(() => {
+            console.log("Contact ended");
+            // setActiveConnection(null);
+            activeConnectionRef.current = null;
+          });
+        });
+  
+        setCcpLoaded(true);
+      } catch (error) {
+        console.error("CCP initialization failed:", error);
+      }
+    };
+  
+    // Load streams script if not already loaded
+    if (!window.connect) {
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/amazon-connect-streams@2.18.1/release/connect-streams.min.js';
+      script.async = true;
+      script.onload = () => {
+        console.log("Connect Streams loaded");
+        initializeCCP();
+      };
+      script.onerror = () => console.error("Failed to load Connect Streams");
+      document.body.appendChild(script);
+    } else {
+      initializeCCP();
+    }
+  
+    // Cleanup function
+    return () => {
+      if (ccpCleanup) {
+        ccpCleanup.unbind();
+        ccpContainerRef.current.innerHTML = '';
+      }
+      setCcpLoaded(false);
+      setAgent(null);
+      // setActiveConnection(null);
+      activeConnectionRef.current = null;
+    };
+  }, []);
+
+  
+
 // Modify addNotification to prevent state overwrites
 const addNotification = useCallback((message, type = 'success') => {
   setNotifications(prev => [
@@ -135,6 +176,37 @@ const addNotification = useCallback((message, type = 'success') => {
     }
   ]);
 }, []);
+
+// Add DTMF sending function
+const sendDTMFDigits = useCallback((digits) => {
+  // Try to get connection from both state and ref
+  const connection = activeConnectionRef.current || 
+                    agent?.getContacts()?.[0]?.getAgentConnection();
+  if (!connection) {
+    // console.error("No active connection");
+    addNotification('No active call connection', 'error');
+    return false;
+  }
+
+  try {
+    addNotification(`Sending DTMF: ${digits}`);
+    connection.sendDigits(digits.toString(), {
+      success: () => {
+        console.log(`DTMF ${digits} sent successfully`);
+        addNotification(`Sent DTMF: ${digits}`);
+      },
+      failure: (err) => {
+        console.error("DTMF send failed:", err);
+        addNotification(`DTMF failed: ${err.message}`, 'error');
+      }
+    });
+    return true;
+  } catch (error) {
+    console.error("DTMF error:", error);
+    addNotification(`DTMF error: ${error.message}`, 'error');
+    return false;
+  }
+}, [agent, addNotification]);
 
   // Function to handle DTMF sending from backend
   // const handleSendDTMF = async (digits) => {
