@@ -222,7 +222,7 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
         "tax_id": "843612075",
     }
     
-    # Create LLM prompt
+    # Create an LLM prompt
     prompt = f"""
         You are an assistant that extracts answers from provided data. You will be given three variables:
         - row_data: A JSON object containing patient details from an Excel file in the form of Key value-pair, key will be column name and value will corresponding value.

@@ -288,13 +288,17 @@ const handleSetActiveConnection = useCallback((connection) => {
 
         // Check if we need to send DTMF
         // console.log("Response sent:", data.responseSent); 
-        if (data.responseSent.field === "press a number") {
-            console.log("DTMF condition true:", data.responseSent.value);
-          // handleSendDTMF(data.responseSent.value);
-          // notifications(`Response sent: ${data.responseSent.value}`);
-          sendDTMFDigits(data.responseSent.value);
-          console.log("DTMF sent:", data.responseSent.value);
-        }
+        if (
+          data.responseSent.field === "press a number" || 
+          /^[\d-]+$/.test(data.responseSent.value)
+        ) {
+          const cleanedValue = data.responseSent.value.replace(/-/g, '');
+        
+          console.log("DTMF condition true:", data.responseSent.value);
+        
+          sendDTMFDigits(cleanedValue);
+          console.log("DTMF sent:", cleanedValue);
+        }        
       }
 
       if (data.ContactStatus) {
@@ -493,27 +497,28 @@ const handleSetActiveConnection = useCallback((connection) => {
           />
         </div>
 
-        {/* Phone input */}
-        <div className="mb-6">
-          <label className="block text-sm font-medium mb-1">Or Enter Phone Number</label>
-          <input
-            type="text"
-            value={number}
-            onChange={(e) => setNumber(e.target.value)}
-            className="w-full p-3 border border-gray-300 rounded-lg"
-            placeholder="+1234567890"
-          />
-        </div>
+        {/* Phone display (read-only) */}
+<div className="mb-6">
+  <label className="block text-sm font-medium mb-1">Selected Phone Number</label>
+  <div className="w-full p-3 border border-gray-300 rounded-lg bg-gray-100">
+    {number ? (
+      <span>{number}</span>
+    ) : (
+      <span className="text-gray-400">No number selected</span>
+    )}
+  </div>
+</div>
 
-        <button
-          onClick={handleCall}
-          disabled={!number || loading}
-          className={`w-full p-3 text-white font-semibold rounded-lg mb-6 ${
-            !number || loading ? "bg-gray-400" : "bg-black hover:bg-gray-800"
-          } transition`}
-        >
-          {buttonText()}
-        </button>
+<button
+  onClick={handleCall}
+  disabled={!number || loading}
+  className="w-full p-3 text-white font-semibold rounded-lg mb-6 transition 
+             bg-black hover:bg-gray-800 
+             disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed"
+>
+  {buttonText()}
+</button>
+
 
         {/* Status messages */}
         {message && <div className="text-sm mb-4 text-blue-700">{message}</div>}
