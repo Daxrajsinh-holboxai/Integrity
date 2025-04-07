@@ -373,6 +373,20 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
         generated_text = response_body['content'][0]['text']
         print("Claude Response:", generated_text)
 
+        # Uncomment the following lines to use OpenAI instead of Bedrock
+        # response = openai.chat.completions.create(
+        #     model="gpt-3.5-turbo",  # Or gpt-4
+        #     messages=[
+        #         {"role": "system", "content": prompt},
+        #         {"role": "user", "content": "IVR_TEXT: " + ivr_text}
+        #     ]
+        # )
+
+        # generated_text = response.choices[0].message.content
+        # print("OpenAI Response:", generated_text)
+
+        # print(f"---------------------LLM response: {response}")
+
         # Parse the generated text
         try:
             parsed_output = json.loads(generated_text)
