@@ -245,53 +245,139 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
            return {{"value": "1", "field": "press a number"}}."
         2. If the ivr_text is irrelevant to the provided data or if no matching field can be determined, then your response should be:
            {{"value": "No matching data found", "field": "unknown"}}
+
+        THE MOST IMPORTANT THING IS TO FOLLOW THE INSTRUCTIONS PRECISELY AND RETURN THE RESPONSE IN THE REQUIRED JSON FORMAT ONLY NOT SPARE TEXT WITH, JUST JSON FORMAT, THAT'S IT.
     """
+
+    # prompt = f"""
+    #     You are an advanced AI assistant designed to interpret IVR (Interactive Voice Response) prompts and extract relevant information from provided data. Your task is to analyze the IVR text and determine the appropriate response based on the given patient and provider details.
+
+    #     You will be provided with three input variables:
+
+    #     <row_data>
+    #     {json.dumps(row_data)}
+    #     </row_data>
+
+    #     This is a JSON object containing patient details from an Excel file in the form of key-value pairs. The keys are column names, and the values are the corresponding data.
+
+    #     <provider_details>
+    #     {json.dumps(provider_details)}
+    #     </provider_details>
+
+    #     This is a JSON object containing provider details that might be referenced in the IVR questions.
+
+    #     <ivr_text>
+    #     {ivr_text}
+    #     </ivr_text>
+
+    #     This is a string representing the IVR spoken text. It may ask the caller to provide details, instruct the caller to press a number, or present multiple options.
+
+    #     Your task is to analyze the IVR_TEXT and determine the appropriate response based on the ROW_DATA and PROVIDER_DETAILS. Follow these general rules and preferences:
+
+    #     1. If there's a choice between text and audio input, prefer a choice number corresponding to text.
+    #     2. For language preferences, always prefer a choice number for English.
+    #     4. Pay attention to negative instructions (e.g., "NOT") and follow them precisely, For example, if said "do NOT enter your provider_id, ".
+    #     5. For numeric inputs, wait for all digits to be presented before confirming.
+    #     6. Ignore any phone numbers provided for calling.
+    #     7. If confirmation of information is requested and the information is incorrect, respond with "NO" or press 2.
+    #     8. When asked for an NPI, look for the provider ID field in the provider_details.
+    #     9. Do not enter example values provided by the IVR.
+
+    #     Handle the following special cases and scenarios:
+
+    #     1. Provider vs. Member/Participant choice: Always choose the provider option when available.
+    #     2. Numeric inputs: Enter TAX_ID, Participation ID, Health Claim ID, or Member ID as requested, using the appropriate field from row_data or provider_details.
+    #     3. Date of Birth: Enter in the format specified by the IVR (e.g., MMDDYYYY).
+    #     4. Emergency options: Choose non-emergency options unless explicitly instructed otherwise.
+    #     5. Reason for call: Prefer "Eligibility" or "Benefits" when asked.
+    #     6. Healthcare provider identification: Confirm as a healthcare provider when asked.
+    #     7. Coverage type: Choose "Medical" when asked about type of coverage.
+
+    #     Your response should be in the following JSON structure:
+
+    #     <answer>
+    #     {
+    #     "value": "response_value",
+    #     "field": "source_field"
+    #     }
+    #     </answer>
+
+    #     Where:
+    #     - "value" is the appropriate response or action based on the IVR prompt
+    #     - "field" is the source of the information (column name from row_data or provider_details, or "IVR_response" if it's a direct response to the IVR prompt)
+
+    #     Follow this step-by-step process:
+
+    #     1. Carefully read and analyze the IVR_TEXT.
+    #     2. Identify the type of response required (e.g., numeric input, voice command, button press).
+    #     3. Search for relevant information in ROW_DATA and PROVIDER_DETAILS.
+    #     4. Apply the general rules and preferences to determine the appropriate response.
+    #     5. Handle any special cases or scenarios as instructed.
+    #     6. Formulate the response in the required JSON structure.
+
+    #     Examples:
+
+    #     1. IVR: "If you're a provider press 1, or if you're a member press 2."
+    #     Response: {"value": "1", "field": "IVR_response"}
+
+    #     2. IVR: "Please enter your 9-digit TAX_ID number followed by the pound sign."
+    #     Response: {"value": "123456789#", "field": "TAX_ID"}
+
+    #     3. IVR: "Please enter the patient's date of birth using 2 digits for the month, 2 digits for the day, and 4 digits for the year."
+    #     Response: {"value": "01011990", "field": "DOB"}
+
+    #     4. IVR: "For eligibility and benefits press 2."
+    #     Response: {"value": "2", "field": "IVR_response"}
+
+    #     5. IVR: "Please say your reason for calling. For example, you can say things like 'Claims' or 'Eligibility'."
+    #     Response: {"value": "Eligibility", "field": "IVR_response"}
+
+    #     Remember:
+    #     - Always prioritize provider options over member options.
+    #     - Use the most relevant and specific information from the provided data.
+    #     - If no matching data is found or the IVR prompt is irrelevant to the provided data, respond with:
+    #     {"value": "No matching data found", "field": "unknown"}
+    #     - Be prepared to handle multi-step IVR processes by providing appropriate responses at each step.
+    # """ 
+
     # ivr_text: {ivr_text}
     try:
-        # Call Amazon Titan (Nova Micro) LLM with corrected structure
-        response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",  # Or gpt-4
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": "IVR_TEXT: " + ivr_text}
+        # Construct the request body for Claude
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 1000,
+            "system": prompt,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "IVR_TEXT: " + ivr_text
+                        }
+                    ]
+                }
             ]
+        }
+
+        # Invoke Claude via Bedrock
+        response = bedrock.invoke_model(
+            modelId="anthropic.claude-3-5-sonnet-20240620-v1:0",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body)
         )
 
-        generated_text = response.choices[0].message.content
-        print("OpenAI Response:", generated_text)
+        # Parse the response
+        response_body = json.loads(response['body'].read())
+        generated_text = response_body['content'][0]['text']
+        print("Claude Response:", generated_text)
 
-        print(f"---------------------LLM response: {response}")
-
-    #     # Read and decode the response
-    #     response_body = response['body'].read().decode('utf-8')
-    #     print(f"*************LLM response body: {response_body}")
-    #     response_data = json.loads(response_body)
-    #     print(f"LLM raw response: {response_data}")
-
-    #     # Extract generated text from the correct path
-    #     message_content = response_data.get('output', {}).get('message', {}).get('content', [])
-    #     generated_text = message_content[0].get('text', '') if message_content else ''
-    #     print(f"LLM generated text: {generated_text}")
-
-    #     # Optionally parse JSON string inside the text, if needed
-    #     try:
-    #         parsed_output = json.loads(generated_text)
-    #         value = parsed_output.get("value", "")
-    #         field = parsed_output.get("field", "unknown")
-    #     except json.JSONDecodeError:
-    #         value = generated_text
-    #         field = "unknown"
-
-    #     return {"question": ivr_text, "value": value, "field": field}
-
-
-    # except Exception as e:
-    #     print(f"LLM invocation error: {str(e)}")
-    #     return {"question": ivr_text, "value": "Invocation error", "field": "error"}
+        # Parse the generated text
         try:
-                parsed_output = json.loads(generated_text)
-                value = parsed_output.get("value", "")
-                field = parsed_output.get("field", "unknown")
+            parsed_output = json.loads(generated_text)
+            value = parsed_output.get("value", "")
+            field = parsed_output.get("field", "unknown")
         except json.JSONDecodeError:
             value = generated_text
             field = "unknown"
@@ -299,11 +385,9 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
         return {"question": ivr_text, "value": value, "field": field}
 
     except Exception as e:
-        print(f"OpenAI API error: {e}")
-    return {"question": ivr_text, "value": "Invocation error", "field": "error"}
+        print(f"Bedrock API error: {e}")
+        return {"question": ivr_text, "value": "Invocation error", "field": "error"}
 
-
-# Modify the poll_call_status function to run in an async context
 # Modified poll_call_status to ensure real-time analysis starts
 async def poll_call_status(contact_id: str):
     """Enhanced status polling with real-time analysis initiation"""
