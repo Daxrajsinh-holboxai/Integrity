@@ -24,27 +24,29 @@ function App() {
   const [agent, setAgent] = useState(null);
   const [ccpLoaded, setCcpLoaded] = useState(false);
   const activeConnectionRef = useRef(null);
+  const contactIdRef = useRef(null);
 
   const wsRef = useRef(null);
   const transcriptRef = useRef(null);
   
-  const statusColors = {
-    INITIATED: "text-yellow-600",
-    QUEUED: "text-yellow-600",
-    CONNECTING: "text-yellow-600",
-    CONNECTED: "text-green-600",
-    FAILED: "text-red-600",
-    COMPLETED: "text-blue-600",
-  };
+  // Update status messages and colors
+const statusColors = {
+  INIT: "text-yellow-600",
+  CONNECTING: "text-yellow-600",
+  CONNECTED: "text-green-600",
+  ENDED: "text-blue-600",
+  MISSED: "text-red-600",
+  ERROR: "text-red-600",
+};
 
-  const messages = {
-    INITIATED: "Call is being initiated...",
-    QUEUED: "Call is in queue",
-    CONNECTING: "Connecting to IVR system...",
-    CONNECTED: "Connected to IVR system",
-    FAILED: "Call failed",
-    COMPLETED: "Call completed",
-  };
+const messages = {
+  INIT: "Initializing call...",
+  CONNECTING: "Connecting to recipient...",
+  CONNECTED: "Call connected",
+  ENDED: "Call completed",
+  MISSED: "Call missed",
+  ERROR: "Call failed",
+};
 
   useEffect(() => {
     if (transcriptRef.current) {
@@ -57,6 +59,10 @@ function App() {
       if (wsRef.current) wsRef.current.close();
     };
   }, []);
+
+  useEffect(() => {
+    contactIdRef.current = contactId;
+  }, [contactId]);
 
   useEffect(() => {
     let ccpCleanup = null;
@@ -85,7 +91,53 @@ function App() {
         // Contact callback
         window.connect.contact((contact) => {
           console.log("New contact received:", contact);
-  
+          
+          // Check if this is our tracked contact
+          const isOurContact = contact.getContactId() === contactIdRef.current;
+          if (!isOurContact) return;
+
+          // Status handler
+          const handleStatusChange = (status) => {
+            setCallStatus({ ContactStatus: status });
+            console.log("Contact status:", status);
+          };
+
+          // Contact event handlers
+          contact.onConnecting(() => {
+            handleStatusChange('CONNECTING');
+            setMessage(`Call initiated to ${number}. Connecting...`);
+          });
+
+          contact.onConnected(() => {
+            handleStatusChange('CONNECTED');
+            setMessage('Connected to IVR - Transcription active');
+            setIsConnected(true);
+          });
+
+          contact.onEnded(() => {
+            const finalState = contact.getState().type;
+            handleStatusChange(finalState);
+            setMessage(finalState === 'MISSED' ? 'Call missed' : 'Call ended');
+            setIsConnected(false);
+            setActiveCall(false);
+            setContactId(null);
+          });
+
+          contact.onMissed(() => {
+            handleStatusChange('MISSED');
+            setMessage('Call missed');
+            setIsConnected(false);
+            setActiveCall(false);
+            setContactId(null);
+          });
+
+          // Handle initial state
+          const initialState = contact.getState().type;
+          handleStatusChange(initialState);
+          if (initialState === 'CONNECTING') {
+            setMessage(`Call initiated to ${number}. Connecting...`);
+          }
+          
           contact.onAccepted(() => {
             addNotification("Contact accepted");
             const conn = contact.getInitialConnection();
@@ -308,16 +360,16 @@ const handleSetActiveConnection = useCallback((connection) => {
           setMessage("Connected to IVR - Transcription active");
         }
 
-        if (["COMPLETED", "FAILED"].includes(data.status)) {
-          newWs.close();
-          setActiveCall(false);
-          setContactId(null); // Reset contact ID when call ends
-          setMessage(
-            data.transcript?.length > 30
-              ? "Call completed. Transcript saved."
-              : "Call completed. No significant transcript available."
-          );
-        }
+        // if (["COMPLETED", "FAILED"].includes(data.status)) {
+        //   newWs.close();
+        //   setActiveCall(false);
+        //   setContactId(null); // Reset contact ID when call ends
+        //   setMessage(
+        //     data.transcript?.length > 30
+        //       ? "Call completed. Transcript saved."
+        //       : "Call completed. No significant transcript available."
+        //   );
+        // }
       }
     };
 
