@@ -284,7 +284,7 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
         8. If it is asked for a phone number / contact number, look for the 'payer phone' or related field from the row_data.
 
         Handle the following special cases and scenarios:
-        These responses should in 'value' attribute of json response:
+        These responses should be in 'value' attribute of json response:
         1. Provider vs. Member/Participant choice: Always choose the provider number option when available.
         2. Numeric inputs: Enter TAX_ID, Participation ID, Health Claim ID, or Member ID as requested, using the appropriate field from row_data or provider_details.
         3. Date of Birth: Enter in the format specified by the IVR (e.g., MMDDYYYY).

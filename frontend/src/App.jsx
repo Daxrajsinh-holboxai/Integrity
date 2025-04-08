@@ -23,9 +23,15 @@ function App() {
   const ccpContainerRef = useRef(null);
   const [agent, setAgent] = useState(null);
   const [ccpLoaded, setCcpLoaded] = useState(false);
+  const [currentRowIndex, setCurrentRowIndex] = useState(0);
+  const [isAutoCallEnabled, setIsAutoCallEnabled] = useState(false);
+  const [nextCallDelay, setNextCallDelay] = useState(5000);
+  const [requiresConfirmation, setRequiresConfirmation] = useState(true);
+  const [pendingProceed, setPendingProceed] = useState(false);
+  
+  const prevContactIdRef = useRef();
   const activeConnectionRef = useRef(null);
   const contactIdRef = useRef(null);
-
   const wsRef = useRef(null);
   const transcriptRef = useRef(null);
   
@@ -65,6 +71,68 @@ const messages = {
   }, [contactId]);
 
   useEffect(() => {
+    const prevContactId = prevContactIdRef.current;
+    if (prevContactId && !contactId && isAutoCallEnabled) {
+      const finalStatus = callStatus?.ContactStatus?.toUpperCase();
+      setSentResponses([]);
+      setTranscript("");
+  
+      if (['ENDED', 'MISSED'].includes(finalStatus)) {
+        if (requiresConfirmation) {
+          setPendingProceed(true);
+          setMessage(`Previous call ${finalStatus}. Awaiting confirmation...`);
+        } else {
+          setMessage(`Starting next call in ${nextCallDelay / 1000}sec...`);
+          const timer = setTimeout(() => {
+            setCurrentRowIndex(prev => prev + 1);
+          }, nextCallDelay);
+          return () => clearTimeout(timer);
+        }
+      }
+    }
+    prevContactIdRef.current = contactId;
+  }, [contactId, isAutoCallEnabled, callStatus, nextCallDelay, requiresConfirmation]);
+
+
+  // Add useEffect for processing rows
+  useEffect(() => {
+    if (isAutoCallEnabled && excelData.length > 0 && currentRowIndex < excelData.length && !pendingProceed) {
+      const row = excelData[currentRowIndex];
+      const raw = row["Payer Phone"] || row.Phone;
+      const normalized = normalizePhone(raw);
+      
+      if (normalized) {
+        handleExcelRowClick(row);
+      } else {
+        setMessage(`Skipping row ${currentRowIndex + 1} - invalid phone number`);
+        setCurrentRowIndex(prev => prev + 1);
+      }
+    }
+  }, [currentRowIndex, excelData, isAutoCallEnabled, pendingProceed]);
+
+  // Add useEffect to trigger calls
+  useEffect(() => {
+    if (isAutoCallEnabled && selectedRow && !activeCall && !pendingProceed) {
+      handleCall();
+    }
+  }, [selectedRow]);
+
+  useEffect(() => {
+    if (isAutoCallEnabled && currentRowIndex < excelData.length) {
+      const row = excelData[currentRowIndex];
+      setSelectedRow(row); // Set the selected row based on the current index
+    }
+  }, [currentRowIndex, isAutoCallEnabled, excelData]);  
+
+  // Add useEffect to handle completion
+  useEffect(() => {
+    if (isAutoCallEnabled && currentRowIndex >= excelData.length) {
+      setIsAutoCallEnabled(false);
+      setMessage("All calls completed");
+    }
+  }, [currentRowIndex, excelData.length, isAutoCallEnabled]);
+
+  useEffect(() => {
     let ccpCleanup = null;
   
     const initializeCCP = () => {
@@ -91,6 +159,8 @@ const messages = {
         // Contact callback
         window.connect.contact((contact) => {
           console.log("New contact received:", contact);
+
+          activeConnectionRef.current = null;
           
           // Check if this is our tracked contact
           const isOurContact = contact.getContactId() === contactIdRef.current;
@@ -98,8 +168,9 @@ const messages = {
 
           // Status handler
           const handleStatusChange = (status) => {
-            setCallStatus({ ContactStatus: status });
-            console.log("Contact status:", status);
+            const normalizedStatus = status.toUpperCase();
+            setCallStatus({ ContactStatus: normalizedStatus });
+            console.log("Contact status:", normalizedStatus);
           };
 
           // Contact event handlers
@@ -115,7 +186,7 @@ const messages = {
           });
 
           contact.onEnded(() => {
-            const finalState = contact.getState().type;
+            const finalState = contact.getState().type.toUpperCase();;
             handleStatusChange(finalState);
             setMessage(finalState === 'MISSED' ? 'Call missed' : 'Call ended');
             setIsConnected(false);
@@ -142,6 +213,7 @@ const messages = {
             addNotification("Contact accepted");
             const conn = contact.getInitialConnection();
             if (conn) {
+              activeConnectionRef.current = null;
               activeConnectionRef.current = conn;
               console.log("Connection obtained:", conn);
               addNotification("Connection established");
@@ -159,6 +231,10 @@ const messages = {
                 if (!mediaInfo?.dtmfSupported) {
                   addNotification("DTMF not supported in this call", "error");
                 }
+              });
+
+              conn.onDestroy(() => {
+                activeConnectionRef.current = null;
               });
     
               // Handle connection state changes
@@ -214,7 +290,10 @@ const messages = {
     };
   }, []);
 
-  
+  const handleProceed = () => {
+    setPendingProceed(false);
+    setCurrentRowIndex((prev) => prev + 1);
+  };
 
 // Modify addNotification to prevent state overwrites
 const addNotification = useCallback((message, type = 'success') => {
@@ -234,18 +313,18 @@ const sendDTMFDigits = useCallback((digits) => {
   // Try to get connection from both state and ref
   const connection = activeConnectionRef.current || 
                     agent?.getContacts()?.[0]?.getAgentConnection();
-  if (!connection) {
+  if (!connection || !connection.isActive()) {
     // console.error("No active connection");
     addNotification('No active call connection', 'error');
     return false;
   }
-
+  const cleanDigits = digits.replace(/\D/g, '');
   try {
-    addNotification(`Sending DTMF: ${digits}`);
-    connection.sendDigits(digits.toString(), {
+    addNotification(`Sending DTMF: ${cleanDigits}`);
+    connection.sendDigits(cleanDigits, {
       success: () => {
-        console.log(`DTMF ${digits} sent successfully`);
-        addNotification(`Sent DTMF: ${digits}`);
+        console.log(`DTMF ${cleanDigits} sent successfully`);
+        addNotification(`Sent DTMF: ${cleanDigits}`);
       },
       failure: (err) => {
         console.error("DTMF send failed:", err);
@@ -334,6 +413,11 @@ const handleSetActiveConnection = useCallback((connection) => {
     newWs.onmessage = (event) => {
       // console.log("WebSocket message:", event.data);
       const data = JSON.parse(event.data);
+      // Clear previous data on new call
+      if (data.ContactStatus === 'INIT') {
+        setSentResponses([]);
+        setTranscript("");
+      }
       if (data.transcript) setTranscript(data.transcript);
       if (data.responseSent) {
         setSentResponses(prev => [...prev, data.responseSent]);
@@ -360,16 +444,16 @@ const handleSetActiveConnection = useCallback((connection) => {
           setMessage("Connected to IVR - Transcription active");
         }
 
-        // if (["COMPLETED", "FAILED"].includes(data.status)) {
-        //   newWs.close();
-        //   setActiveCall(false);
-        //   setContactId(null); // Reset contact ID when call ends
-        //   setMessage(
-        //     data.transcript?.length > 30
-        //       ? "Call completed. Transcript saved."
-        //       : "Call completed. No significant transcript available."
-        //   );
-        // }
+        if (["COMPLETED", "FAILED"].includes(data.status)) {
+          newWs.close();
+          setActiveCall(false);
+          setContactId(null); // Reset contact ID when call ends
+          setMessage(
+            data.transcript?.length > 30
+              ? "Call completed. Transcript saved."
+              : "Call completed. No significant transcript available."
+          );
+        }
       }
     };
 
@@ -433,6 +517,8 @@ const handleSetActiveConnection = useCallback((connection) => {
       const ws = wb.Sheets[wb.SheetNames[0]];
       const data = XLSX.utils.sheet_to_json(ws, { defval: "" });
       setExcelData(data);
+      setIsAutoCallEnabled(true);
+      setCurrentRowIndex(0);
     };
 
     reader.readAsBinaryString(file);
@@ -451,7 +537,7 @@ const handleSetActiveConnection = useCallback((connection) => {
 
   const getStatusMessage = () => {
     if (!callStatus) return null;
-    const status = callStatus.ContactStatus || callStatus.status;
+    const status = callStatus.ContactStatus?.toUpperCase() || callStatus.status;
     return (
       <div className="mt-4 p-3 bg-gray-100 rounded-lg text-sm text-gray-800">
         <p className={`font-semibold ${statusColors[status] || "text-gray-800"}`}>
@@ -497,6 +583,11 @@ const handleSetActiveConnection = useCallback((connection) => {
 
     return (
       <div className="h-full overflow-auto">
+        {isAutoCallEnabled && (
+          <div className="mb-2 p-2 bg-blue-100 text-blue-800 rounded">
+            Processing row {currentRowIndex + 1} of {excelData.length}
+          </div>
+        )}
         <h2 className="text-lg font-semibold mb-2 text-gray-800">Uploaded Contact List</h2>
         <table className="w-full border border-gray-300 rounded-lg text-sm bg-white text-gray-800">
           <thead className="bg-gray-200 sticky top-0 z-10">
@@ -511,10 +602,12 @@ const handleSetActiveConnection = useCallback((connection) => {
           <tbody>
             {excelData.map((row, idx) => (
               <tr
-                key={idx}
-                className="hover:bg-blue-50 cursor-pointer"
-                onClick={() => handleExcelRowClick(row)}
-              >
+              key={idx}
+              className={`hover:bg-blue-50 ${
+                isAutoCallEnabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+              }`}
+              onClick={!isAutoCallEnabled ? () => handleExcelRowClick(row) : undefined}
+            >
                 {headers.map((header, i) => (
                   <td key={i} className="px-4 py-2 border-b">{row[header]}</td>
                 ))}
@@ -562,14 +655,64 @@ const handleSetActiveConnection = useCallback((connection) => {
 </div>
 
 <button
-  onClick={handleCall}
-  disabled={!number || loading}
-  className="w-full p-3 text-white font-semibold rounded-lg mb-6 transition 
-             bg-black hover:bg-gray-800 
-             disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed"
->
-  {buttonText()}
-</button>
+        onClick={handleCall}
+        disabled={!number || loading || isAutoCallEnabled}
+        className="w-full p-3 text-white font-semibold rounded-lg mb-6 transition 
+                   bg-black hover:bg-gray-800 
+                   disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed"
+      >
+        {buttonText()}
+      </button>
+
+      <div className="mb-4">
+  <label className="block text-sm font-medium mb-1">
+    Delay between calls (seconds):
+  </label>
+  <input
+    type="number"
+    value={nextCallDelay / 1000}
+    onChange={(e) => setNextCallDelay(Math.max(1, e.target.value) * 1000)}
+    className="w-full p-2 border border-gray-300 rounded-lg"
+    min="1"
+    max="60"
+  />
+</div>
+
+{isAutoCallEnabled && pendingProceed && (
+  <div className="mb-4 p-3 bg-yellow-100 rounded-lg">
+    <p className="text-sm mb-2">Proceed to next call (Row {currentRowIndex + 2})?</p>
+    <div className="flex gap-2">
+      <button
+        onClick={handleProceed}  // Proceed to next row when user confirms
+        className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
+      >
+        Proceed to Row {currentRowIndex + 2}
+      </button>
+      <button
+        onClick={() => {
+          setIsAutoCallEnabled(false);
+          setPendingProceed(false);
+          setCurrentRowIndex(0); // Reset to the first row
+        }}
+        className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+      >
+        Stop Sequence
+      </button>
+    </div>
+  </div>
+)}
+
+<div className="mb-4">
+  <label className="flex items-center space-x-2">
+    <input
+      type="checkbox"
+      checked={requiresConfirmation}
+      onChange={(e) => setRequiresConfirmation(e.target.checked)}
+      className="form-checkbox"
+    />
+    <span className="text-sm">Require confirmation between calls</span>
+  </label>
+</div>
 
 
         {/* Status messages */}
