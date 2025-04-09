@@ -291,6 +291,13 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
         4. Reason for call: Prefer the number option for "Eligibility" or "Benefits" when asked.
         5. Healthcare provider identification: Confirm as a healthcare provider when asked by it's corresponding number.
         6. Coverage type: Choose a corresponding number option for "Medical" when asked about type of coverage.
+        7. If the IVR prompt only allows / asks for a voice response (i.e., no numeric options), reply with 'field' set to 'Voice only' and 'value' set to the voice command that should be spoken 
+            (told by an IVR. e.g., Please speak the subscriber identification number, including all alpha characters then response should be 
+            {{
+                "value": "<value that need to be spoken>",
+                "field": "voice only"
+            }}).
+        8. (IMPORTANT POINT) If there's an option for pressing a number other than fields I mentioned, like irrelevant fields like business, e-commerce, For network contracts or credentialing, etc. then do NOT respond there with "press a number". 
 
         Your response should be in the following JSON structure:
         {{
@@ -300,7 +307,7 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
 
         Where:
         - "value" is the appropriate response or action based on the IVR prompt
-        - "field" is the source of the information (column name from row_data or provider_details, or "IVR_response" if it's a direct response to the IVR prompt)
+        - "field" is the source of the information (column name from row_data or provider_details, or "press a number" / "voice only" if it's a direct response to the IVR prompt)
 
         Follow this step-by-step process:
 
@@ -310,11 +317,12 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
         4. Apply the general rules and preferences to determine the appropriate response.
         5. Handle any special cases or scenarios as instructed.
         6. Formulate the response in the required JSON structure.
+        7. For the statements that includes of "only speaking / "or say", field should be "voice only" and value should be the value that need to be spoken.
 
         Examples:
 
         1. IVR: "If you're a provider press 1, or if you're a member press 2."
-        Response: {{"value": "1", "field": "IVR_response"}}
+        Response: {{"value": "1", "field": "press a number"}}
 
         2. IVR: "Please enter your 9-digit TAX_ID number followed by the pound sign."
         Response: {{"value": "123456789#", "field": "TAX_ID"}}
@@ -323,10 +331,10 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
         Response: {{"value": "01011990", "field": "DOB"}}
 
         4. IVR: "For eligibility and benefits press 2."
-        Response: {{"value": "2", "field": "IVR_response"}}
+        Response: {{"value": "2", "field": "press a number"}}
 
         5. IVR: "Please say your reason for calling. For example, you can say things like 'Claims' or 'Eligibility'."
-        Response: {{"value": "Eligibility", "field": "IVR_response"}}
+        Response: {{"value": "Eligibility", "field": "voice only"}}
 
         Remember:
         - Always prioritize provider options over member options.

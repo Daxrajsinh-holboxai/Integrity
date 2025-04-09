@@ -426,9 +426,9 @@ const handleSetActiveConnection = useCallback((connection) => {
         // console.log("Response sent:", data.responseSent); 
         if (
           data.responseSent.field === "press a number" || 
-          /^[\d-]+$/.test(data.responseSent.value)
+          /^[\d-#]+$/.test(data.responseSent.value)
         ) {
-          const cleanedValue = data.responseSent.value.replace(/-/g, '');
+          const cleanedValue = data.responseSent.value.replace(/[-#]/g, '');
         
           console.log("DTMF condition true:", data.responseSent.value);
         
