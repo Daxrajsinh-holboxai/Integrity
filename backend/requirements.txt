@@ -1,0 +1,11 @@
+fastapi==0.95.0
+uvicorn==0.22.0
+pydantic==1.10.6
+boto3==1.26.9
+botocore==1.29.9
+dotenv==0.21.0
+aioboto3==10.4.0
+asyncio==3.4.3
+hashlib==0.0.2
+re==2.2.1
+openai==0.27.0
