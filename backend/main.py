@@ -215,12 +215,12 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
     print(f"Processing IVR prompt with row data: {row_data}")
     columns = list(row_data.keys())
     print(f"Available columns: {columns}")
-    provider_details= {
-        "practice_id": "10040282",
-        "provider_name": "HARMONY OAKS RECOVERY CENTER, LLC",
-        "npi": "1447914288",
-        "tax_id": "843612075",
-    }
+    # provider_details= {
+    #     "practice_id": "10040282",
+    #     "provider_name": "HARMONY OAKS RECOVERY CENTER, LLC",
+    #     "npi": "1447914288",
+    #     "tax_id": "843612075",
+    # }
     
     # Create an LLM prompt
     # prompt = f"""
@@ -252,7 +252,7 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
     prompt = f"""
         You are an advanced AI assistant designed to interpret IVR (Interactive Voice Response) prompts and extract relevant information from provided data. Your task is to analyze the IVR text and determine the appropriate response based on the given patient and provider details.
 
-        You will be provided with three input variables:
+        You will be provided with two input variables:
 
         <row_data>
         {json.dumps(row_data)}
@@ -260,33 +260,28 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
 
         This is a JSON object containing patient details from an Excel file in the form of key-value pairs. The keys are column names, and the values are the corresponding data.
 
-        <provider_details>
-        {json.dumps(provider_details)}
-        </provider_details>
-
-        This is a JSON object containing provider details that might be referenced in the IVR questions.
-
         <ivr_text>
         {ivr_text}
         </ivr_text>
 
         This is a string representing the IVR spoken text. It may ask the caller to provide details, instruct the caller to press a number, or present multiple options.
 
-        Your task is to analyze the IVR_TEXT and determine the appropriate response based on the ROW_DATA and PROVIDER_DETAILS. Follow these general rules and preferences:
+        Your task is to analyze the IVR_TEXT and determine the appropriate response based on the ROW_DATA. Follow these general rules and preferences:
 
         1. If there's a choice between text and audio input, prefer a choice number corresponding to text.
         2. For language preferences, always prefer a choice number for English.
         3. Pay attention to negative instructions (e.g., "NOT") and follow them precisely, For example, if said "do NOT enter your provider_id, then don't prefer giving that field and value in response".
         4. Ignore any phone numbers provided for calling. (e.g., "For emergency, call 911." then do not prefer giving that number in response).
         5. If confirmation of information is requested and the information is incorrect, respond with the number corresponding to "NO" choice.
-        6. When asked for an NPI, look for the provider ID field in the provider_details.
-        7. Do not enter example values provided by the IVR.
-        8. If it is asked for a phone number / contact number, look for the 'payer phone' or related field from the row_data.
+        6. When asked for an NPI, look for the provider ID similar field.
+        7. If asked for provider number, look for the provider ID similar field.
+        8. Do not enter example values provided by the IVR.
+        9. If it is asked for a phone number / contact number, look for the 'payer phone' or related field from the row_data.
 
         Handle the following special cases and scenarios:
         These responses should be in 'value' attribute of json response:
         1. Provider vs. Member/Participant choice: Always choose the provider number option when available.
-        2. Numeric inputs: Enter TAX_ID, Participation ID, Health Claim ID, or Member ID as requested, using the appropriate field from row_data or provider_details.
+        2. Numeric inputs: Enter TAX_ID, Participation ID, Health Claim ID, or Member ID as requested, using the appropriate field from row_data.
         3. Date of Birth: Enter in the format specified by the IVR (e.g., MMDDYYYY).
         4. Reason for call: Prefer the number option for "Eligibility" or "Benefits" when asked.
         5. Healthcare provider identification: Confirm as a healthcare provider when asked by it's corresponding number.
@@ -298,7 +293,16 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
                 "field": "voice only"
             }}).
         8. (IMPORTANT POINT) If there's an option for pressing a number other than fields I mentioned, like irrelevant fields like business, e-commerce, For network contracts or credentialing, etc. then do NOT respond there with "press a number". 
-
+        9. If the IVR says it's transferring to an agent (e.g., "please wait while we connect you to an agent" or any similar statements telling for 
+            "please wait" or "please hold", "transferring your call", "connecting to a representative"), respond with:
+            {{"value": "transferring", "field": "transfer to agent"}}
+        10. If there's a phrase called "goodbye" or like that, it does not mean it is transferring to an agent. At that case, prevent responding with {{"value": "transferring", "field": "transfer to agent"}}.
+        11. Ignore example birthday formats provided by the IVR (e.g., "MMDDYYYY"). Only respond with the actual date of birth in the specified format.
+        12. If asked for a customer, don't reply to press a number corresponding to it. In short, don't allow response with press a number for customer, members like that. It should be only for provider.
+            (For example, If ivr ask for "You can say, I'm a customer or press one." then don't respond with press a number and value 1.)
+        13. If asked like "Please enter patient's 9 digit ID or the Social Security number of the primary account holder", then look for the relevant fields like Patient ID.
+        14. If asked like "Say claims or press one" then go for that corresponding number. In short, Claims option should be preferred.
+        15. If asked for "Please say or Patient's X ID" then X is company's name so in that case also, ignore X and look for patient id.
         Your response should be in the following JSON structure:
         {{
             "value": "response_value",
@@ -307,13 +311,13 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
 
         Where:
         - "value" is the appropriate response or action based on the IVR prompt
-        - "field" is the source of the information (column name from row_data or provider_details, or "press a number" / "voice only" if it's a direct response to the IVR prompt)
+        - "field" is the source of the information (column name from row_data, or "press a number" / "voice only" if it's a direct response to the IVR prompt)
 
         Follow this step-by-step process:
 
         1. Carefully read and analyze the IVR_TEXT.
         2. Identify the type of response required (e.g., numeric input, voice command, button press).
-        3. Search for relevant information in ROW_DATA and PROVIDER_DETAILS.
+        3. Search for relevant information in ROW_DATA.
         4. Apply the general rules and preferences to determine the appropriate response.
         5. Handle any special cases or scenarios as instructed.
         6. Formulate the response in the required JSON structure.

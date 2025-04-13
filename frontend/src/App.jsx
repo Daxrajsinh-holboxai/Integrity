@@ -28,7 +28,17 @@ function App() {
   const [nextCallDelay, setNextCallDelay] = useState(5000);
   const [requiresConfirmation, setRequiresConfirmation] = useState(true);
   const [pendingProceed, setPendingProceed] = useState(false);
-  
+  const [awaitingAgentConnection, setAwaitingAgentConnection] = useState(false);
+  const [lastTranscriptUpdate, setLastTranscriptUpdate] = useState(0);  
+  const [audioContext] = useState(() => new (window.AudioContext || window.webkitAudioContext)());
+  const [agentConnected, setAgentConnected] = useState(false);
+  const [callProgress, setCallProgress] = useState('IVR_INTERACTION');
+  const silenceDetectorRef = useRef(null);
+  const audioAnalyserRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const transferInitiatedRef = useRef(false);
+  const preTransferTranscriptLength = useRef(0);
+  const beepBufferRef = useRef(null);
   const prevContactIdRef = useRef();
   const activeConnectionRef = useRef(null);
   const contactIdRef = useRef(null);
@@ -70,6 +80,23 @@ const messages = {
     contactIdRef.current = contactId;
   }, [contactId]);
 
+
+  // Initialize beep sound
+useEffect(() => {
+  // Create a 1-second beep sound
+  const duration = 0.2;
+  const sampleRate = audioContext.sampleRate;
+  const numFrames = duration * sampleRate;
+  const buffer = audioContext.createBuffer(1, numFrames, sampleRate);
+  const channelData = buffer.getChannelData(0);
+  
+  for (let i = 0; i < numFrames; i++) {
+    channelData[i] = Math.sin(2 * Math.PI * 600 * i / sampleRate); // 600Hz tone
+  }
+  
+  beepBufferRef.current = buffer;
+}, [audioContext]);
+
   useEffect(() => {
     const prevContactId = prevContactIdRef.current;
     if (prevContactId && !contactId && isAutoCallEnabled) {
@@ -92,7 +119,6 @@ const messages = {
     }
     prevContactIdRef.current = contactId;
   }, [contactId, isAutoCallEnabled, callStatus, nextCallDelay, requiresConfirmation]);
-
 
   // Add useEffect for processing rows
   useEffect(() => {
@@ -131,6 +157,19 @@ const messages = {
       setMessage("All calls completed");
     }
   }, [currentRowIndex, excelData.length, isAutoCallEnabled]);
+
+  const agentRef = useRef();
+  useEffect(() => {
+    agentRef.current = agent;
+  }, [agent]);
+
+
+  const cleanupAudioAnalysis = () => {
+    if (silenceDetectorRef.current) clearInterval(silenceDetectorRef.current);
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+    }
+  };
 
   useEffect(() => {
     let ccpCleanup = null;
@@ -183,10 +222,26 @@ const messages = {
             handleStatusChange('CONNECTED');
             setMessage('Connected to IVR - Transcription active');
             setIsConnected(true);
+            setTranscript("");
+            setSentResponses([]);
+
+            // Mute the agent's microphone
+            if (agentRef.current) {
+              agentRef.current.mute()
+                .then(() => {
+                  addNotification("Microphone muted automatically");
+                })
+                .catch((error) => {
+                  console.error("Mute failed:", error);
+                  addNotification("Failed to mute microphone", "error");
+                });
+            }
           });
 
           contact.onEnded(() => {
-            const finalState = contact.getState().type.toUpperCase();;
+            const finalState = contact.getState().type.toUpperCase();
+            cleanupAudioAnalysis();
+            setCallProgress('IVR_INTERACTION');
             handleStatusChange(finalState);
             setMessage(finalState === 'MISSED' ? 'Call missed' : 'Call ended');
             setIsConnected(false);
@@ -211,13 +266,23 @@ const messages = {
           
           contact.onAccepted(() => {
             addNotification("Contact accepted");
+            if (agentRef.current) {
+              agentRef.current.mute()
+                .then(() => {
+                  addNotification("Microphone muted on accept");
+                })
+                .catch((error) => {
+                  console.error("Mute failed:", error);
+                  addNotification("Failed to mute on accept", "error");
+                });
+            }
             const conn = contact.getInitialConnection();
             if (conn) {
               activeConnectionRef.current = null;
               activeConnectionRef.current = conn;
               console.log("Connection obtained:", conn);
               addNotification("Connection established");
-    
+              setupAudioAnalysis(conn);
               // Wait for media connection before setting active
               conn.onMediaConnected(() => {
                 console.log("Media connected - Ready for DTMF");
@@ -308,6 +373,41 @@ const addNotification = useCallback((message, type = 'success') => {
   ]);
 }, []);
 
+// Add audio analysis setup
+const setupAudioAnalysis = async (connection) => {
+  try {
+    const mediaController = connection.getMediaController();
+    const stream = await mediaController.getAudioStream();
+    mediaStreamRef.current = stream;
+    
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const analyser = audioContext.createAnalyser();
+    audioAnalyserRef.current = analyser;
+    
+    const source = audioContext.createMediaStreamSource(stream);
+    source.connect(analyser);
+    
+    analyser.fftSize = 256;
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+
+    const checkAudioActivity = () => {
+      analyser.getByteFrequencyData(dataArray);
+      const sum = dataArray.reduce((a, b) => a + b, 0);
+      
+      if (sum > 1000 && callProgress === 'HOLD_MUSIC') { // Adjust threshold as needed
+        setCallProgress('AGENT_SPEAKING');
+        addNotification("Agent connected!");
+      }
+    };
+
+    silenceDetectorRef.current = setInterval(checkAudioActivity, 500);
+  } catch (error) {
+    console.error("Audio analysis setup failed:", error);
+  }
+};
+
+
 // Add DTMF sending function
 const sendDTMFDigits = useCallback((digits) => {
   // Try to get connection from both state and ref
@@ -338,6 +438,46 @@ const sendDTMFDigits = useCallback((digits) => {
     return false;
   }
 }, [agent, addNotification]);
+
+const playVoiceResponse = useCallback(async () => {
+  addNotification('Playing voice response', 'audio');
+  const connection = activeConnectionRef.current || 
+                    agent?.getContacts()?.[0]?.getAgentConnection();
+  if (!connection || !connection.isActive()) {
+    addNotification('No active call connection for audio', 'error');
+    return false;
+  }
+
+  try {
+    const mediaController = connection.getMediaController();
+    const dummyAudioUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3";
+    
+    addNotification('Sending voice response to call', 'audio');
+    
+    // Play the audio through the call connection
+    await new Promise((resolve, reject) => {
+      mediaController.playAudio({
+        url: dummyAudioUrl,
+        interrupt: true
+      }, {
+        success: () => {
+          addNotification('Voice response sent successfully', 'audio');
+          resolve();
+        },
+        failure: (error) => {
+          addNotification(`Voice response failed: ${error.message}`, 'error');
+          reject(error);
+        }
+      });
+    });
+    
+    return true;
+  } catch (error) {
+    console.error("Voice response failed:", error);
+    addNotification(`Voice response failed: ${error.message}`, 'error');
+    return false;
+  }
+}, [addNotification, agent]);
 
   // Function to handle DTMF sending from backend
   // const handleSendDTMF = async (digits) => {
@@ -377,11 +517,14 @@ const NotificationToast = () => (
         className={`p-3 border rounded-lg shadow-lg flex items-center ${
           notification.type === 'error' 
             ? 'bg-red-100 border-red-400 text-red-700' 
+            : notification.type === 'audio'
+            ? 'bg-purple-100 border-purple-400 text-purple-700'
             : 'bg-green-100 border-green-400 text-green-700'
         }`}
       >
         <span className="mr-2">
-          {notification.type === 'error' ? '❌' : '✅'}
+          {notification.type === 'error' ? '❌' : 
+           notification.type === 'audio' ? '🔊' : '✅'}
         </span>
         {notification.message}
       </div>
@@ -394,12 +537,99 @@ const handleSetActiveConnection = useCallback((connection) => {
   setActiveConnection(connection);
 }, []);
 
-  const normalizePhone = (phone) => {
-    const digits = phone.replace(/\D/g, "");
-    if (digits.length === 10) return `+1${digits}`;
-    if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-    return "";
-  };
+const normalizePhone = (phone) => {
+  if (!phone) {
+    return ""; // Return an empty string if phone is null or undefined
+  }
+
+  const phoneStr = String(phone); // Ensure phone is a string
+
+  const digits = phoneStr.replace(/\D/g, "");
+  
+  if (digits.length === 10) {
+    return `+1${digits}`;
+  }
+  
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return `+${digits}`;
+  }
+  
+  return ""; // Return an empty string if phone number format is not valid
+};
+
+
+
+  useEffect(() => {
+    if (!awaitingAgentConnection) return;
+  
+    const checkAgentConnection = () => {
+      // If we've had 5 seconds of silence after transfer message
+      if (Date.now() - lastTranscriptUpdate > 5000) {
+        // Next transcript update will be considered agent speech
+        const unsubscribe = watch(
+          () => transcript,
+          (value, previousValue) => {
+            if (value.length > previousValue.length) {
+              addNotification("Agent connected!");
+              setAwaitingAgentConnection(false);
+              unsubscribe();
+            }
+          }
+        );
+      }
+    };
+  
+    const interval = setInterval(checkAgentConnection, 1000);
+    return () => clearInterval(interval);
+  }, [awaitingAgentConnection, lastTranscriptUpdate, transcript]);
+
+  const AgentConnectionPopup = () => (
+    <div className="fixed top-4 left-1/2 transform -translate-x-1/2 bg-green-500 text-white px-6 py-3 rounded-md shadow-lg flex items-center space-x-2 z-[9999] animate-pulse">
+      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+      </svg>
+      <span>AGENT CONNECTED!</span>
+    </div>
+  );
+
+  // Add useEffect for agent connection detection
+  useEffect(() => {
+    if (!transferInitiatedRef.current) return;
+  
+    const silenceDuration = 5000;
+    let timeoutId;
+    let checkInterval;
+    let active = true;
+  
+    const checkForAgent = () => {
+      if (!active) return;
+      
+      // Check if we've had new transcript since transfer initiation
+      if (transcript.length > preTransferTranscriptLength.current) {
+        setAgentConnected(true);
+        addNotification("Agent connected!");
+        setAwaitingAgentConnection(false);
+        setTimeout(() => setAgentConnected(false), 3000);
+        transferInitiatedRef.current = false;
+        preTransferTranscriptLength.current = 0;
+        clearInterval(checkInterval);
+      }
+    };
+  
+    timeoutId = setTimeout(() => {
+      if (!active) return;
+      checkInterval = setInterval(checkForAgent, 500);
+    }, silenceDuration);
+  
+    return () => {
+      active = false;
+      clearTimeout(timeoutId);
+      clearInterval(checkInterval);
+      transferInitiatedRef.current = false;
+      preTransferTranscriptLength.current = 0;
+      setAwaitingAgentConnection(false);
+    };
+  }, [transcript]); // Keep transcript as dependency
 
   const setupWebSocket = (contactId) => {
     if (wsRef.current) wsRef.current.close();
@@ -415,15 +645,47 @@ const handleSetActiveConnection = useCallback((connection) => {
       const data = JSON.parse(event.data);
       // Clear previous data on new call
       if (data.ContactStatus === 'INIT') {
-        setSentResponses([]);
         setTranscript("");
+        setSentResponses([]);
+        setAwaitingAgentConnection(false);
+        transferInitiatedRef.current = false;
+        preTransferTranscriptLength.current = 0;
       }
-      if (data.transcript) setTranscript(data.transcript);
+      if (data.transcript) {
+        setTranscript(prev => {
+          const newPhrase = data.transcript.trim();
+          return prev.endsWith(newPhrase) ? prev : `${prev} ${newPhrase}`;
+        });
+      }
+
       if (data.responseSent) {
         setSentResponses(prev => [...prev, data.responseSent]);
 
         // Check if we need to send DTMF
         // console.log("Response sent:", data.responseSent); 
+
+        if (data.responseSent?.field === "transfer to agent") {
+          // Store the transcript length at the moment of transfer initiation
+          setCallProgress('HOLD_MUSIC');
+          setTimeout(() => {
+            if (callProgress === 'HOLD_MUSIC') {
+              addNotification("Detecting agent connection...");
+            }
+          }, 5000);
+          addNotification("Transferring to agent...");
+        }
+
+        if (data.responseSent.field === "voice only") {
+          playVoiceResponse();
+        }
+
+        // Handle call termination
+        if (["COMPLETED", "FAILED", "ENDED"].includes(data.ContactStatus?.toUpperCase())) {
+          setAwaitingAgentConnection(false);
+          transferInitiatedRef.current = false;
+          preTransferTranscriptLength.current = 0;
+        }
+
         if (
           data.responseSent.field === "press a number" || 
           /^[\d-#]+$/.test(data.responseSent.value)
@@ -484,6 +746,7 @@ const handleSetActiveConnection = useCallback((connection) => {
     setLoading(true);
     setMessage("Initiating call...");
     setTranscript("");
+    setSentResponses([]);
     setCallStatus(null);
     setIsConnected(false);
     setWsStatus("disconnected");
@@ -510,19 +773,59 @@ const handleSetActiveConnection = useCallback((connection) => {
 
   const handleExcelUpload = (e) => {
     const file = e.target.files[0];
+  
+    // Check if a file is selected
+    if (!file) {
+      setMessage("No file selected.");
+      return;
+    }
+  
     const reader = new FileReader();
-
+  
     reader.onload = (evt) => {
-      const wb = XLSX.read(evt.target.result, { type: "binary" });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const data = XLSX.utils.sheet_to_json(ws, { defval: "" });
-      setExcelData(data);
-      setIsAutoCallEnabled(true);
-      setCurrentRowIndex(0);
+      try {
+        // Parse the file into a workbook
+        const wb = XLSX.read(evt.target.result, { type: "binary" });
+  
+        // Check if there are sheets in the workbook
+        if (!wb.SheetNames.length) {
+          setMessage("No sheets found in the Excel file.");
+          return;
+        }
+  
+        // Get the first sheet
+        const ws = wb.Sheets[wb.SheetNames[0]];
+  
+        // Convert sheet data to JSON
+        const data = XLSX.utils.sheet_to_json(ws, { defval: "" });
+  
+        // Check if the data is empty
+        if (!data.length) {
+          setMessage("The Excel sheet is empty.");
+          return;
+        }
+  
+        // Update state with the parsed data
+        setExcelData(data);
+        setIsAutoCallEnabled(true);
+        setCurrentRowIndex(0);
+  
+        setMessage("Excel file processed successfully.");
+      } catch (error) {
+        setMessage(`Error reading Excel file: ${error.message}`);
+        console.error("Excel file reading error:", error);
+      }
     };
-
+  
+    reader.onerror = (error) => {
+      setMessage("Error reading file.");
+      console.error("File reader error:", error);
+    };
+  
+    // Read the file as binary string
     reader.readAsBinaryString(file);
   };
+  
 
   const handleExcelRowClick = (row) => {
     const raw = row["Payer Phone"] || row.Phone;
@@ -721,6 +1024,8 @@ const handleSetActiveConnection = useCallback((connection) => {
 
         {/* Transcript - Fixed height */}
         {transcriptDisplay()}
+
+        {agentConnected && <AgentConnectionPopup />}
 
 
         <div className="mt-4 p-3 bg-blue-50 rounded-lg">
