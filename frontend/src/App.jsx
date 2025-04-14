@@ -44,6 +44,7 @@ function App() {
   const contactIdRef = useRef(null);
   const wsRef = useRef(null);
   const transcriptRef = useRef(null);
+  const [readyToStartAutoCall, setReadyToStartAutoCall] = useState(false);
   
   // Update status messages and colors
 const statusColors = {
@@ -104,37 +105,28 @@ useEffect(() => {
       setSentResponses([]);
       setTranscript("");
   
-      if (['ENDED', 'MISSED'].includes(finalStatus)) {
-        if (requiresConfirmation) {
-          setPendingProceed(true);
-          setMessage(`Previous call ${finalStatus}. Awaiting confirmation...`);
-        } else {
-          setMessage(`Starting next call in ${nextCallDelay / 1000}sec...`);
-          const timer = setTimeout(() => {
-            setCurrentRowIndex(prev => prev + 1);
-          }, nextCallDelay);
-          return () => clearTimeout(timer);
-        }
-      }
+      // Always require confirmation after each call (including first)
+    setPendingProceed(true);
+    setMessage(`Call ${finalStatus}. Awaiting confirmation...`);
     }
     prevContactIdRef.current = contactId;
   }, [contactId, isAutoCallEnabled, callStatus, nextCallDelay, requiresConfirmation]);
 
   // Add useEffect for processing rows
-  useEffect(() => {
-    if (isAutoCallEnabled && excelData.length > 0 && currentRowIndex < excelData.length && !pendingProceed) {
-      const row = excelData[currentRowIndex];
-      const raw = row["Payer Phone"] || row.Phone;
-      const normalized = normalizePhone(raw);
-      
-      if (normalized) {
-        handleExcelRowClick(row);
-      } else {
-        setMessage(`Skipping row ${currentRowIndex + 1} - invalid phone number`);
-        setCurrentRowIndex(prev => prev + 1);
-      }
+useEffect(() => {
+  if (isAutoCallEnabled && excelData.length > 0 && currentRowIndex < excelData.length && !pendingProceed) {
+    const row = excelData[currentRowIndex];
+    const raw = row["Payer Phone"] || row.Phone;
+    const normalized = normalizePhone(raw);
+    
+    if (normalized) {
+      handleExcelRowClick(row);
+    } else {
+      setMessage(`Skipping row ${currentRowIndex + 1} - invalid phone number`);
+      setCurrentRowIndex(prev => prev + 1);
     }
-  }, [currentRowIndex, excelData, isAutoCallEnabled, pendingProceed]);
+  }
+}, [currentRowIndex, excelData, isAutoCallEnabled, pendingProceed]);
 
   // Add useEffect to trigger calls
   useEffect(() => {
@@ -807,10 +799,10 @@ const normalizePhone = (phone) => {
   
         // Update state with the parsed data
         setExcelData(data);
-        setIsAutoCallEnabled(true);
+        // setIsAutoCallEnabled(true);
         setCurrentRowIndex(0);
-  
-        setMessage("Excel file processed successfully.");
+        setReadyToStartAutoCall(true);
+        setMessage("Excel file loaded. Click 'Start Auto Call' to begin.");
       } catch (error) {
         setMessage(`Error reading Excel file: ${error.message}`);
         console.error("Excel file reading error:", error);
@@ -1002,6 +994,21 @@ const normalizePhone = (phone) => {
         Stop Sequence
       </button>
     </div>
+  </div>
+)}
+
+{readyToStartAutoCall && !isAutoCallEnabled && (
+  <div className="mb-4 p-3 bg-blue-100 rounded-lg">
+    <p className="text-sm mb-2">Ready to start auto-call sequence ({excelData.length} contacts)</p>
+    <button
+      onClick={() => {
+        setIsAutoCallEnabled(true);
+        setReadyToStartAutoCall(false);
+      }}
+      className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+    >
+      Start Auto Call
+    </button>
   </div>
 )}
 
