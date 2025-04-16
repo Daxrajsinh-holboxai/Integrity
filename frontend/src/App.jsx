@@ -30,7 +30,6 @@ function App() {
   const [pendingProceed, setPendingProceed] = useState(false);
   const [awaitingAgentConnection, setAwaitingAgentConnection] = useState(false);
   const [lastTranscriptUpdate, setLastTranscriptUpdate] = useState(0);  
-  const [audioContext] = useState(() => new (window.AudioContext || window.webkitAudioContext)());
   const [agentConnected, setAgentConnected] = useState(false);
   const [callProgress, setCallProgress] = useState('IVR_INTERACTION');
   const silenceDetectorRef = useRef(null);
@@ -38,13 +37,18 @@ function App() {
   const mediaStreamRef = useRef(null);
   const transferInitiatedRef = useRef(false);
   const preTransferTranscriptLength = useRef(0);
-  const beepBufferRef = useRef(null);
   const prevContactIdRef = useRef();
   const activeConnectionRef = useRef(null);
   const contactIdRef = useRef(null);
   const wsRef = useRef(null);
   const transcriptRef = useRef(null);
   const [readyToStartAutoCall, setReadyToStartAutoCall] = useState(false);
+
+  const [audioContext] = useState(() => new (window.AudioContext || window.webkitAudioContext)());
+  const beepBufferRef = useRef(null);
+  const alertSoundRef = useRef(null);
+  const popupSoundRef = useRef(null);
+  const tickSoundRef = useRef(null);
   
   // Update status messages and colors
 const statusColors = {
@@ -82,21 +86,67 @@ const messages = {
   }, [contactId]);
 
 
-  // Initialize beep sound
-useEffect(() => {
-  // Create a 1-second beep sound
-  const duration = 0.2;
-  const sampleRate = audioContext.sampleRate;
-  const numFrames = duration * sampleRate;
-  const buffer = audioContext.createBuffer(1, numFrames, sampleRate);
-  const channelData = buffer.getChannelData(0);
-  
-  for (let i = 0; i < numFrames; i++) {
-    channelData[i] = Math.sin(2 * Math.PI * 600 * i / sampleRate); // 600Hz tone
-  }
-  
-  beepBufferRef.current = buffer;
-}, [audioContext]);
+  useEffect(() => {
+    // Tick Sound: Small, quick beep for notifications
+    const createTickSound = () => {
+      const duration = 0.1;
+      const sampleRate = audioContext.sampleRate;
+      const numFrames = duration * sampleRate;
+      const buffer = audioContext.createBuffer(1, numFrames, sampleRate);
+      const channelData = buffer.getChannelData(0);
+      for (let i = 0; i < numFrames; i++) {
+        channelData[i] = Math.sin(2 * Math.PI * 1000 * i / sampleRate); // 1000Hz tone for the tick
+      }
+      tickSoundRef.current = buffer;
+    };
+
+    // Alert Sound: Longer tone for important events (like transferring to agent)
+    const createAlertSound = () => {
+      const duration = 1.5;
+      const sampleRate = audioContext.sampleRate;
+      const numFrames = duration * sampleRate;
+      const buffer = audioContext.createBuffer(1, numFrames, sampleRate);
+      const channelData = buffer.getChannelData(0);
+      for (let i = 0; i < numFrames; i++) {
+        channelData[i] = Math.sin(2 * Math.PI * 500 * i / sampleRate); // 500Hz tone for the alert
+      }
+      alertSoundRef.current = buffer;
+    };
+
+    const createPopupSound = () => {
+      const duration = 0.5; // Duration of the popup sound
+      const sampleRate = audioContext.sampleRate;
+      const numFrames = duration * sampleRate;
+      const buffer = audioContext.createBuffer(1, numFrames, sampleRate);
+      const channelData = buffer.getChannelData(0);
+      for (let i = 0; i < numFrames; i++) {
+        channelData[i] = Math.sin(2 * Math.PI * 880 * i / sampleRate); // 880Hz tone for the popup
+      }
+      popupSoundRef.current = buffer;
+    };
+
+    createTickSound();
+    createAlertSound();
+    createPopupSound();
+  }, [audioContext]);
+
+  const playSound = (soundType) => {
+    let buffer = null;
+    if (soundType === "tick") {
+      buffer = tickSoundRef.current;
+    } else if (soundType === "alert") {
+      buffer = alertSoundRef.current;
+    } else if (soundType === "popup") {
+      buffer = popupSoundRef.current;
+    }
+
+    if (buffer) {
+      const source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audioContext.destination);
+      source.start();
+    }
+  };
 
   useEffect(() => {
     const prevContactId = prevContactIdRef.current;
@@ -221,11 +271,11 @@ useEffect(() => {
             if (agentRef.current) {
               agentRef.current.mute()
                 .then(() => {
-                  addNotification("Microphone muted automatically");
+                  // addNotification("Microphone muted automatically");
                 })
                 .catch((error) => {
                   console.error("Mute failed:", error);
-                  addNotification("Failed to mute microphone", "error");
+                  // addNotification("Failed to mute microphone", "error");
                 });
             }
           });
@@ -261,11 +311,11 @@ useEffect(() => {
             if (agentRef.current) {
               agentRef.current.mute()
                 .then(() => {
-                  addNotification("Microphone muted on accept");
+                  // addNotification("Microphone muted on accept");
                 })
                 .catch((error) => {
                   console.error("Mute failed:", error);
-                  addNotification("Failed to mute on accept", "error");
+                  // addNotification("Failed to mute on accept", "error");
                 });
             }
             const conn = contact.getInitialConnection();
@@ -273,20 +323,20 @@ useEffect(() => {
               activeConnectionRef.current = null;
               activeConnectionRef.current = conn;
               console.log("Connection obtained:", conn);
-              addNotification("Connection established");
+              // addNotification("Connection established");
               setupAudioAnalysis(conn);
               // Wait for media connection before setting active
               conn.onMediaConnected(() => {
                 console.log("Media connected - Ready for DTMF");
                 // setActiveConnection(conn);
                 activeConnectionRef.current = conn;
-                addNotification("Media connected - DTMF enabled");
+                // addNotification("Media connected - DTMF enabled");
                 
                 // Verify DTMF support
                 const mediaInfo = conn.getMediaInfo();
                 console.log("Media capabilities:", mediaInfo);
                 if (!mediaInfo?.dtmfSupported) {
-                  addNotification("DTMF not supported in this call", "error");
+                  // addNotification("DTMF not supported in this call", "error");
                 }
               });
 
@@ -352,6 +402,16 @@ useEffect(() => {
     setCurrentRowIndex((prev) => prev + 1);
   };
 
+  const playTransferToAgentSound = () => {
+    const audio = new Audio('/audio/transferring-to-agent.mp3'); // Path to your MP3 file
+    audio.play();
+  };
+
+  const playNotificationSound = () => {
+    const audio = new Audio('/audio/notification.mp3'); // Path to your MP3 file
+    audio.play();
+  };
+
 // Modify addNotification to prevent state overwrites
 const addNotification = useCallback((message, type = 'success') => {
   setNotifications(prev => [
@@ -363,6 +423,18 @@ const addNotification = useCallback((message, type = 'success') => {
       timestamp: Date.now()
     }
   ]);
+
+  // Play tick sound for normal notifications
+  if (type !== "error") {
+    if (message === "Transferring to agent...") {
+      // Play alert sound if transferring to agent
+      playTransferToAgentSound();
+    } else {
+      // Play tick sound for other normal notifications
+      // playTransferToAgentSound();
+      playNotificationSound();
+    }
+  }
 }, []);
 
 // Add audio analysis setup
@@ -412,7 +484,7 @@ const sendDTMFDigits = useCallback((digits) => {
   }
   const cleanDigits = digits.replace(/\D/g, '');
   try {
-    addNotification(`Sending DTMF: ${cleanDigits}`);
+    // addNotification(`Sending DTMF: ${cleanDigits}`);
     connection.sendDigits(cleanDigits, {
       success: () => {
         console.log(`DTMF ${cleanDigits} sent successfully`);
@@ -432,7 +504,7 @@ const sendDTMFDigits = useCallback((digits) => {
 }, [agent, addNotification]);
 
 const playVoiceResponse = useCallback(async () => {
-  addNotification('Playing voice response', 'audio');
+  // addNotification('Playing voice response', 'audio');
   const connection = activeConnectionRef.current || 
                     agent?.getContacts()?.[0]?.getAgentConnection();
   if (!connection || !connection.isActive()) {
@@ -442,26 +514,26 @@ const playVoiceResponse = useCallback(async () => {
 
   try {
     const mediaController = connection.getMediaController();
-    const dummyAudioUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3";
+    // const dummyAudioUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3";
     
-    addNotification('Sending voice response to call', 'audio');
+    addNotification('Please Send voice response to call', 'audio');
     
-    // Play the audio through the call connection
-    await new Promise((resolve, reject) => {
-      mediaController.playAudio({
-        url: dummyAudioUrl,
-        interrupt: true
-      }, {
-        success: () => {
-          addNotification('Voice response sent successfully', 'audio');
-          resolve();
-        },
-        failure: (error) => {
-          addNotification(`Voice response failed: ${error.message}`, 'error');
-          reject(error);
-        }
-      });
-    });
+    // // Play the audio through the call connection
+    // await new Promise((resolve, reject) => {
+    //   mediaController.playAudio({
+    //     url: dummyAudioUrl,
+    //     interrupt: true
+    //   }, {
+    //     success: () => {
+    //       addNotification('Voice response sent successfully', 'audio');
+    //       resolve();
+    //     },
+    //     failure: (error) => {
+    //       addNotification(`Voice response failed: ${error.message}`, 'error');
+    //       reject(error);
+    //     }
+    //   });
+    // });
     
     return true;
   } catch (error) {
@@ -661,7 +733,7 @@ const normalizePhone = (phone) => {
           setCallProgress('HOLD_MUSIC');
           setTimeout(() => {
             if (callProgress === 'HOLD_MUSIC') {
-              addNotification("Detecting agent connection...");
+              // addNotification("Detecting agent connection...");
             }
           }, 5000);
           addNotification("Transferring to agent...");
