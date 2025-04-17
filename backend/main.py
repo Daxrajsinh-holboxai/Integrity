@@ -166,7 +166,7 @@ async def fetch_analysis_segments(contact_id: str):
             if not next_token:
                 break
 
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.4)
             retries = 0
 
         except ClientError as e:

@@ -299,7 +299,7 @@ useEffect(() => {
             setContactId(null);
           });
 
-          // Handle initial state
+          // Handle initial state...
           const initialState = contact.getState().type;
           handleStatusChange(initialState);
           if (initialState === 'CONNECTING') {
