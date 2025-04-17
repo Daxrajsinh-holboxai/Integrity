@@ -1084,7 +1084,7 @@ const normalizePhone = (phone) => {
   </div>
 )}
 
-<div className="mb-4">
+{/* <div className="mb-4">
   <label className="flex items-center space-x-2">
     <input
       type="checkbox"
@@ -1094,7 +1094,7 @@ const normalizePhone = (phone) => {
     />
     <span className="text-sm">Require confirmation between calls</span>
   </label>
-</div>
+</div> */}
 
 
         {/* Status messages */}
