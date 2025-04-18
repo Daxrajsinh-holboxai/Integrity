@@ -699,7 +699,7 @@ const normalizePhone = (phone) => {
     if (wsRef.current) wsRef.current.close();
     const wsBaseUrl = import.meta.env.VITE_WS_URL; // Vite-style env access
     console.log("--------WebSocket Base URL:", wsBaseUrl);
-    const newWs = new WebSocket(`${wsBaseUrl}/ws/${contactId}`);
+    const newWs = new WebSocket(`ws://integrity-backend-sjfo.onrender.com/ws/${contactId}`);
 
     wsRef.current = newWs;
     setWsStatus("connecting");
@@ -822,7 +822,7 @@ const normalizePhone = (phone) => {
     try {
       const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
       console.log("************API Base URL:", apiBaseUrl);
-      const response = await axios.post(`${apiBaseUrl}/initiate-call`, {
+      const response = await axios.post(`https://integrity-backend-sjfo.onrender.com/initiate-call`, {
         phoneNumber: number,
         rowData: selectedRow
       });
