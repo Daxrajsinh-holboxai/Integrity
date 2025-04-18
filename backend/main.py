@@ -15,7 +15,7 @@ from botocore.exceptions import ClientError, BotoCoreError
 import uuid
 import aioboto3
 import asyncio
-import hashlib
+import base64
 import re
 import openai
 
@@ -71,10 +71,8 @@ bedrock = boto3.client(
 # transcribe = boto3.client('transcribe', region_name=os.getenv("AWS_REGION"))
 
 def hash_segment(content: str) -> str:
-    """Generate a hash for content after normalizing whitespace and case."""
     normalized = " ".join(content.strip().lower().split())
-    return hashlib.sha256(normalized.encode()).hexdigest()
-
+    return base64.urlsafe_b64encode(normalized.encode()).decode()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
