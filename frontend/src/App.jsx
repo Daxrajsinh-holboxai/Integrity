@@ -503,45 +503,62 @@ const sendDTMFDigits = useCallback((digits) => {
   }
 }, [agent, addNotification]);
 
-const playVoiceResponse = useCallback(async () => {
-  // addNotification('Playing voice response', 'audio');
-  const connection = activeConnectionRef.current || 
-                    agent?.getContacts()?.[0]?.getAgentConnection();
-  if (!connection || !connection.isActive()) {
-    addNotification('No active call connection for audio', 'error');
-    return false;
-  }
-
+const playVoiceResponse = useCallback(async (responseData) => {
   try {
-    const mediaController = connection.getMediaController();
-    // const dummyAudioUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3";
+    if (!agentRef.current) {
+      addNotification('Agent not initialized', 'error');
+      return false;
+    }
+
+    // 1. Unmute the agent
+    await agentRef.current.unmute();
+    addNotification('Unmuted for voice response', 'info');
+
+    // 2. Use Web Audio API for precise control
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const response = await fetch('/audio/transferring-to-agent.mp3');
+    const arrayBuffer = await response.arrayBuffer();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
     
-    addNotification('Please Send voice response to call', 'audio');
+    // 3. Create audio source with gain control
+    const source = audioContext.createBufferSource();
+    source.buffer = audioBuffer;
     
-    // // Play the audio through the call connection
-    // await new Promise((resolve, reject) => {
-    //   mediaController.playAudio({
-    //     url: dummyAudioUrl,
-    //     interrupt: true
-    //   }, {
-    //     success: () => {
-    //       addNotification('Voice response sent successfully', 'audio');
-    //       resolve();
-    //     },
-    //     failure: (error) => {
-    //       addNotification(`Voice response failed: ${error.message}`, 'error');
-    //       reject(error);
-    //     }
-    //   });
-    // });
+    // 4. Create special destination that loops back to mic
+    const destination = audioContext.createMediaStreamDestination();
+    source.connect(destination);
     
+    // 5. Get user media with echo cancellation disabled
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
+      }
+    });
+    
+    // 6. Merge the streams
+    const audioTrack = destination.stream.getAudioTracks()[0];
+    stream.addTrack(audioTrack);
+    
+    // 7. Play the audio
+    source.start(0);
+    addNotification('Playing voice response...', 'audio');
+
+    // 8. Clean up when done
+    source.onended = async () => {
+      stream.getTracks().forEach(track => track.stop());
+      await agentRef.current.mute();
+      addNotification('Voice response completed', 'success');
+    };
+
     return true;
   } catch (error) {
     console.error("Voice response failed:", error);
-    addNotification(`Voice response failed: ${error.message}`, 'error');
+    addNotification(`Voice error: ${error.message}`, 'error');
     return false;
   }
-}, [addNotification, agent]);
+}, [addNotification]);
 
   // Function to handle DTMF sending from backend
   // const handleSendDTMF = async (digits) => {
@@ -742,7 +759,7 @@ const normalizePhone = (phone) => {
         }
 
         if (data.responseSent.field === "voice only") {
-          playVoiceResponse();
+          playVoiceResponse(data.responseSent.value);
         }
 
         // Handle call termination
