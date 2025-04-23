@@ -101,6 +101,7 @@ call_status_store: Dict[str, dict] = {}
 class CallRequest(BaseModel):
     phoneNumber: str
     rowData: dict
+    selectedOption: str
 
 class CallStatusRequest(BaseModel):
     contact_id: str
@@ -213,6 +214,10 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
     # Get stored row data
     row_data = call_status_store[contact_id]['row_data']
     print(f"Processing IVR prompt with row data: {row_data}")
+
+    selected_option = call_status_store[contact_id].get('selected_option', 'Claims')
+    print(f"Selected option IN PROMPT: {selected_option}")
+
     columns = list(row_data.keys())
     print(f"Available columns: {columns}")
     # provider_details= {
@@ -249,105 +254,206 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
     #     THE MOST IMPORTANT THING IS TO FOLLOW THE INSTRUCTIONS PRECISELY AND RETURN THE RESPONSE IN THE REQUIRED JSON FORMAT ONLY NOT SPARE TEXT WITH, JUST JSON FORMAT, THAT'S IT.
     # """
 
-    prompt = f"""
-        You are an advanced AI assistant designed to interpret IVR (Interactive Voice Response) prompts and extract relevant information from provided data. Your task is to analyze the IVR text and determine the appropriate response based on the given patient and provider details.
+    if selected_option == "Claims":
+        prompt = f"""
+            You are an advanced AI assistant designed to interpret IVR (Interactive Voice Response) prompts and extract relevant information from provided data. Your task is to analyze the IVR text and determine the appropriate response based on the given patient and provider details.
 
-        You will be provided with two input variables:
+            You will be provided with two input variables:
 
-        <row_data>
-        {json.dumps(row_data)}
-        </row_data>
+            <row_data>
+            {json.dumps(row_data)}
+            </row_data>
 
-        This is a JSON object containing patient details from an Excel file in the form of key-value pairs. The keys are column names, and the values are the corresponding data.
+            This is a JSON object containing patient details from an Excel file in the form of key-value pairs. The keys are column names, and the values are the corresponding data.
 
-        <ivr_text>
-        {ivr_text}
-        </ivr_text>
+            <ivr_text>
+            {ivr_text}
+            </ivr_text>
 
-        This is a string representing the IVR spoken text. It may ask the caller to provide details, instruct the caller to press a number, or present multiple options.
+            This is a string representing the IVR spoken text. It may ask the caller to provide details, instruct the caller to press a number, or present multiple options.
 
-        Your task is to analyze the IVR_TEXT and determine the appropriate response based on the ROW_DATA. Follow these general rules and preferences:
+            Your task is to analyze the IVR_TEXT and determine the appropriate response based on the ROW_DATA. Follow these general rules and preferences:
 
-        1. If there's a choice between text and audio input, prefer a choice number corresponding to text.
-        2. For language preferences, always prefer a choice number for English.
-        3. Pay attention to negative instructions (e.g., "NOT") and follow them precisely, For example, if said "do NOT enter your provider_id, then don't prefer giving that field and value in response".
-        4. Ignore any phone numbers provided for calling. (e.g., "For emergency, call 911." then do not prefer giving that number in response).
-        5. If confirmation of information is requested and the information is incorrect, respond with the number corresponding to "NO" choice.
-        6. When asked for an NPI, look for the provider ID similar field.
-        7. If asked for provider number, look for the provider ID similar field.
-        8. Do not enter example values provided by the IVR.
-        9. If it is asked for a phone number / contact number, look for the 'payer phone' or related field from the row_data.
+            1. If there's a choice between text and audio input, prefer a choice number corresponding to text.
+            2. For language preferences, always prefer a choice number for English.
+            3. Pay attention to negative instructions (e.g., "NOT") and follow them precisely, For example, if said "do NOT enter your provider_id, then don't prefer giving that field and value in response".
+            4. Ignore any phone numbers provided for calling. (e.g., "For emergency, call 911." then do not prefer giving that number in response).
+            5. If confirmation of information is requested and the information is incorrect, respond with the number corresponding to "NO" choice.
+            6. When asked for an NPI, look for the provider ID similar field.
+            7. If asked for provider number, look for the provider ID similar field.
+            8. Do not enter example values provided by the IVR.
+            9. If it is asked for a phone number / contact number, look for the 'payer phone' or related field from the row_data.
 
-        Handle the following special cases and scenarios:
-        These responses should be in 'value' attribute of json response:
-        1. Provider vs. Member/Participant choice: Always choose the provider number option when available.
-        2. Numeric inputs: Enter TAX_ID, Participation ID, Health Claim ID, or Member ID as requested, using the appropriate field from row_data.
-        3. Date of Birth: Enter in the format specified by the IVR (e.g., MMDDYYYY).
-        4. Reason for call: Prefer the number option for "Eligibility" or "Benefits" when asked.
-        5. Healthcare provider identification: Confirm as a healthcare provider when asked by it's corresponding number.
-        6. Coverage type: Choose a corresponding number option for "Medical" when asked about type of coverage.
-        7. If the IVR prompt only allows / asks for a voice response (i.e., no numeric options), reply with 'field' set to 'Voice only' and 'value' set to the voice command that should be spoken 
-            (told by an IVR. e.g., Please speak the subscriber identification number, including all alpha characters then response should be 
+            Handle the following special cases and scenarios:
+            These responses should be in 'value' attribute of json response:
+            1. Provider vs. Member/Participant choice: Always choose the provider number option when available.
+            2. Numeric inputs: Enter TAX_ID, Participation ID, Health Claim ID, or Member ID as requested, using the appropriate field from row_data.
+            3. Date of Birth: Enter in the format specified by the IVR (e.g., MMDDYYYY).
+            4. Reason for call: Prefer the number option for "Eligibility" or "Benefits" when asked.
+            5. Healthcare provider identification: Confirm as a healthcare provider when asked by it's corresponding number.
+            6. Coverage type: Choose a corresponding number option for "Medical" when asked about type of coverage.
+            7. If the IVR prompt only allows / asks for a voice response (i.e., no numeric options), reply with 'field' set to 'Voice only' and 'value' set to the voice command that should be spoken 
+                (told by an IVR. e.g., Please speak the subscriber identification number, including all alpha characters then response should be 
+                {{
+                    "value": "<value that need to be spoken>",
+                    "field": "voice only"
+                }}).
+            8. (IMPORTANT POINT) If there's an option for pressing a number other than fields I mentioned, like irrelevant fields like business, e-commerce, For network contracts or credentialing, etc. then do NOT respond there with "press a number". 
+            9. If the IVR says it's transferring to an agent (e.g., "please wait while we connect you to an agent" or any similar statements telling for 
+                "please wait" or "please hold", "transferring your call", "connecting to a representative"), respond with:
+                {{"value": "transferring", "field": "transfer to agent"}}
+            10. If there's a phrase called "goodbye" or like that, it does not mean it is transferring to an agent. At that case, prevent responding with {{"value": "transferring", "field": "transfer to agent"}}.
+            11. Ignore example birthday formats provided by the IVR (e.g., "MMDDYYYY"). Only respond with the actual date of birth in the specified format.
+            12. If asked for a customer, don't reply to press a number corresponding to it. In short, don't allow response with press a number for customer, members like that. It should be only for provider.
+                (For example, If ivr ask for "You can say, I'm a customer or press one." then don't respond with press a number and value 1.)
+            13. If asked like "Please enter patient's 9 digit ID or the Social Security number of the primary account holder", then look for the relevant fields like Patient ID.
+            14. If asked like "Say claims or press one" then go for that corresponding number. In short, Claims option should be preferred.
+            15. If asked for "Please say or Patient's X ID" then X is company's name so in that case also, ignore X and look for patient id.
+            Your response should be in the following JSON structure:
             {{
-                "value": "<value that need to be spoken>",
-                "field": "voice only"
-            }}).
-        8. (IMPORTANT POINT) If there's an option for pressing a number other than fields I mentioned, like irrelevant fields like business, e-commerce, For network contracts or credentialing, etc. then do NOT respond there with "press a number". 
-        9. If the IVR says it's transferring to an agent (e.g., "please wait while we connect you to an agent" or any similar statements telling for 
-            "please wait" or "please hold", "transferring your call", "connecting to a representative"), respond with:
-            {{"value": "transferring", "field": "transfer to agent"}}
-        10. If there's a phrase called "goodbye" or like that, it does not mean it is transferring to an agent. At that case, prevent responding with {{"value": "transferring", "field": "transfer to agent"}}.
-        11. Ignore example birthday formats provided by the IVR (e.g., "MMDDYYYY"). Only respond with the actual date of birth in the specified format.
-        12. If asked for a customer, don't reply to press a number corresponding to it. In short, don't allow response with press a number for customer, members like that. It should be only for provider.
-            (For example, If ivr ask for "You can say, I'm a customer or press one." then don't respond with press a number and value 1.)
-        13. If asked like "Please enter patient's 9 digit ID or the Social Security number of the primary account holder", then look for the relevant fields like Patient ID.
-        14. If asked like "Say claims or press one" then go for that corresponding number. In short, Claims option should be preferred.
-        15. If asked for "Please say or Patient's X ID" then X is company's name so in that case also, ignore X and look for patient id.
-        Your response should be in the following JSON structure:
-        {{
-            "value": "response_value",
-            "field": "source_field"
-        }}
+                "value": "response_value",
+                "field": "source_field"
+            }}
 
-        Where:
-        - "value" is the appropriate response or action based on the IVR prompt
-        - "field" is the source of the information (column name from row_data, or "press a number" / "voice only" if it's a direct response to the IVR prompt)
+            Where:
+            - "value" is the appropriate response or action based on the IVR prompt
+            - "field" is the source of the information (column name from row_data, or "press a number" / "voice only" if it's a direct response to the IVR prompt)
 
-        Follow this step-by-step process:
+            Follow this step-by-step process:
 
-        1. Carefully read and analyze the IVR_TEXT.
-        2. Identify the type of response required (e.g., numeric input, voice command, button press).
-        3. Search for relevant information in ROW_DATA.
-        4. Apply the general rules and preferences to determine the appropriate response.
-        5. Handle any special cases or scenarios as instructed.
-        6. Formulate the response in the required JSON structure.
-        7. For the statements that includes of "only speaking / "or say", field should be "voice only" and value should be the value that need to be spoken.
+            1. Carefully read and analyze the IVR_TEXT.
+            2. Identify the type of response required (e.g., numeric input, voice command, button press).
+            3. Search for relevant information in ROW_DATA.
+            4. Apply the general rules and preferences to determine the appropriate response.
+            5. Handle any special cases or scenarios as instructed.
+            6. Formulate the response in the required JSON structure.
+            7. For the statements that includes of "only speaking / "or say", field should be "voice only" and value should be the value that need to be spoken.
 
-        Examples:
+            Examples:
 
-        1. IVR: "If you're a provider press 1, or if you're a member press 2."
-        Response: {{"value": "1", "field": "press a number"}}
+            1. IVR: "If you're a provider press 1, or if you're a member press 2."
+            Response: {{"value": "1", "field": "press a number"}}
 
-        2. IVR: "Please enter your 9-digit TAX_ID number followed by the pound sign."
-        Response: {{"value": "123456789#", "field": "TAX_ID"}}
+            2. IVR: "Please enter your 9-digit TAX_ID number followed by the pound sign."
+            Response: {{"value": "123456789#", "field": "TAX_ID"}}
 
-        3. IVR: "Please enter the patient's date of birth using 2 digits for the month, 2 digits for the day, and 4 digits for the year."
-        Response: {{"value": "01011990", "field": "DOB"}}
+            3. IVR: "Please enter the patient's date of birth using 2 digits for the month, 2 digits for the day, and 4 digits for the year."
+            Response: {{"value": "01011990", "field": "DOB"}}
 
-        4. IVR: "For eligibility and benefits press 2."
-        Response: {{"value": "2", "field": "press a number"}}
+            4. IVR: "For eligibility and benefits press 2."
+            Response: {{"value": "2", "field": "press a number"}}
 
-        5. IVR: "Please say your reason for calling. For example, you can say things like 'Claims' or 'Eligibility'."
-        Response: {{"value": "Eligibility", "field": "voice only"}}
+            5. IVR: "Please say your reason for calling. For example, you can say things like 'Claims' or 'Eligibility'."
+            Response: {{"value": "Eligibility", "field": "voice only"}}
 
-        Remember:
-        - Always prioritize provider options over member options.
-        - Use the most relevant and specific information from the provided data.
-        - If no matching data is found or the IVR prompt is irrelevant to the provided data, respond with:
-        {{"value": "No matching data found", "field": "unknown"}}
-        
-        THE MOST IMPORTANT THING IS TO FOLLOW THE INSTRUCTIONS PRECISELY AND RETURN THE RESPONSE IN THE REQUIRED JSON FORMAT ONLY NOT SPARE TEXT WITH, JUST JSON FORMAT, THAT'S IT.
-    """ 
+            Remember:
+            - Always prioritize provider options over member options.
+            - Use the most relevant and specific information from the provided data.
+            - If no matching data is found or the IVR prompt is irrelevant to the provided data, respond with:
+            {{"value": "No matching data found", "field": "unknown"}}
+            
+            THE MOST IMPORTANT THING IS TO FOLLOW THE INSTRUCTIONS PRECISELY AND RETURN THE RESPONSE IN THE REQUIRED JSON FORMAT ONLY NOT SPARE TEXT WITH, JUST JSON FORMAT, THAT'S IT.
+        """ 
+    elif selected_option == "Eligibility":
+        prompt = f"""
+            You are an advanced AI assistant designed to interpret IVR (Interactive Voice Response) prompts and extract relevant information from provided data. Your task is to analyze the IVR text and determine the appropriate response based on the given patient and provider details.
+
+            You will be provided with two input variables:
+
+            <row_data>
+            {json.dumps(row_data)}
+            </row_data>
+
+            This is a JSON object containing patient details from an Excel file in the form of key-value pairs. The keys are column names, and the values are the corresponding data.
+
+            <ivr_text>
+            {ivr_text}
+            </ivr_text>
+
+            This is a string representing the IVR spoken text. It may ask the caller to provide details, instruct the caller to press a number, or present multiple options.
+
+            Your task is to analyze the IVR_TEXT and determine the appropriate response based on the ROW_DATA. Follow these general rules and preferences:
+
+            1. If there's a choice between text and audio input, prefer a choice number corresponding to text.
+            2. For language preferences, always prefer a choice number for English.
+            3. Pay attention to negative instructions (e.g., "NOT") and follow them precisely, For example, if said "do NOT enter your provider_id, then don't prefer giving that field and value in response".
+            4. Ignore any phone numbers provided for calling. (e.g., "For emergency, call 911." then do not prefer giving that number in response).
+            5. If confirmation of information is requested and the information is incorrect, respond with the number corresponding to "NO" choice.
+            6. When asked for an NPI, look for the provider ID similar field.
+            7. If asked for provider number, look for the provider ID similar field.
+            8. Do not enter example values provided by the IVR.
+            9. If it is asked for a phone number / contact number, look for the 'payer phone' or related field from the row_data.
+
+            Handle the following special cases and scenarios:
+            These responses should be in 'value' attribute of json response:
+            1. Provider vs. Member/Participant choice: Always choose the provider number option when available.
+            2. Numeric inputs: Enter TAX_ID, Participation ID, Health Claim ID, or Member ID as requested, using the appropriate field from row_data.
+            3. Date of Birth: Enter in the format specified by the IVR (e.g., MMDDYYYY).
+            4. Reason for call: Prefer the number option for "Eligibility" or "Benefits" when asked.
+            5. Healthcare provider identification: Confirm as a healthcare provider when asked by it's corresponding number.
+            6. Coverage type: Choose a corresponding number option for "Medical" when asked about type of coverage.
+            7. If the IVR prompt only allows / asks for a voice response (i.e., no numeric options), reply with 'field' set to 'Voice only' and 'value' set to the voice command that should be spoken 
+                (told by an IVR. e.g., Please speak the subscriber identification number, including all alpha characters then response should be 
+                {{
+                    "value": "<value that need to be spoken>",
+                    "field": "voice only"
+                }}).
+            8. (IMPORTANT POINT) If there's an option for pressing a number other than fields I mentioned, like irrelevant fields like business, e-commerce, For network contracts or credentialing, etc. then do NOT respond there with "press a number". 
+            9. If the IVR says it's transferring to an agent (e.g., "please wait while we connect you to an agent" or any similar statements telling for 
+                "please wait" or "please hold", "transferring your call", "connecting to a representative"), respond with:
+                {{"value": "transferring", "field": "transfer to agent"}}
+            10. If there's a phrase called "goodbye" or like that, it does not mean it is transferring to an agent. At that case, prevent responding with {{"value": "transferring", "field": "transfer to agent"}}.
+            11. Ignore example birthday formats provided by the IVR (e.g., "MMDDYYYY"). Only respond with the actual date of birth in the specified format.
+            12. If asked for a customer, don't reply to press a number corresponding to it. In short, don't allow response with press a number for customer, members like that. It should be only for provider.
+                (For example, If ivr ask for "You can say, I'm a customer or press one." then don't respond with press a number and value 1.)
+            13. If asked like "Please enter patient's 9 digit ID or the Social Security number of the primary account holder", then look for the relevant fields like Patient ID.
+            14. If asked like "Say claims or press one" then go for that corresponding number. In short, Claims option should be preferred.
+            15. If asked for "Please say or Patient's X ID" then X is company's name so in that case also, ignore X and look for patient id.
+            Your response should be in the following JSON structure:
+            {{
+                "value": "response_value",
+                "field": "source_field"
+            }}
+
+            Where:
+            - "value" is the appropriate response or action based on the IVR prompt
+            - "field" is the source of the information (column name from row_data, or "press a number" / "voice only" if it's a direct response to the IVR prompt)
+
+            Follow this step-by-step process:
+
+            1. Carefully read and analyze the IVR_TEXT.
+            2. Identify the type of response required (e.g., numeric input, voice command, button press).
+            3. Search for relevant information in ROW_DATA.
+            4. Apply the general rules and preferences to determine the appropriate response.
+            5. Handle any special cases or scenarios as instructed.
+            6. Formulate the response in the required JSON structure.
+            7. For the statements that includes of "only speaking / "or say", field should be "voice only" and value should be the value that need to be spoken.
+
+            Examples:
+
+            1. IVR: "If you're a provider press 1, or if you're a member press 2."
+            Response: {{"value": "1", "field": "press a number"}}
+
+            2. IVR: "Please enter your 9-digit TAX_ID number followed by the pound sign."
+            Response: {{"value": "123456789#", "field": "TAX_ID"}}
+
+            3. IVR: "Please enter the patient's date of birth using 2 digits for the month, 2 digits for the day, and 4 digits for the year."
+            Response: {{"value": "01011990", "field": "DOB"}}
+
+            4. IVR: "For eligibility and benefits press 2."
+            Response: {{"value": "2", "field": "press a number"}}
+
+            5. IVR: "Please say your reason for calling. For example, you can say things like 'Claims' or 'Eligibility'."
+            Response: {{"value": "Eligibility", "field": "voice only"}}
+
+            Remember:
+            - Always prioritize provider options over member options.
+            - Use the most relevant and specific information from the provided data.
+            - If no matching data is found or the IVR prompt is irrelevant to the provided data, respond with:
+            {{"value": "No matching data found", "field": "unknown"}}
+            
+            THE MOST IMPORTANT THING IS TO FOLLOW THE INSTRUCTIONS PRECISELY AND RETURN THE RESPONSE IN THE REQUIRED JSON FORMAT ONLY NOT SPARE TEXT WITH, JUST JSON FORMAT, THAT'S IT.
+        """ 
 
     # ivr_text: {ivr_text}
     try:
@@ -455,6 +561,9 @@ async def generic_exception_handler(request, exc):
 @app.post("/initiate-call")
 async def initiate_call(request: CallRequest):
     try:
+        selected_option = request.selectedOption
+        print(f"Selected option: {selected_option}")
+
         response = connect.start_outbound_voice_contact(
             InstanceId=os.getenv("CONNECT_INSTANCE_ID"),
             ContactFlowId=os.getenv("CONTACT_FLOW_ID"),
@@ -474,6 +583,7 @@ async def initiate_call(request: CallRequest):
             'row_data': request.rowData,
             'ContactStatus': 'INITIATED',
             'timestamp': datetime.now(),
+            'selected_option': selected_option
         }
         
         asyncio.create_task(poll_call_status(contact_id))
