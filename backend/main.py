@@ -279,9 +279,9 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
             3. Pay attention to negative instructions (e.g., "NOT") and follow them precisely, For example, if said "do NOT enter your provider_id, then don't prefer giving that field and value in response".
             4. Ignore any phone numbers provided for calling. (e.g., "For emergency, call 911." then do not prefer giving that number in response).
             5. If confirmation of information is requested and the information is incorrect, respond with the number corresponding to "NO" choice.
-            6. When asked for an NPI, look for the provider ID similar field.
+            6. When asked for an NPI, look for the National provider ID similar field.
             7. If asked for provider number, look for the provider ID similar field.
-            8. Do not enter example values provided by the IVR.
+            8. Do not enter example values provided by the IVR. (e.g., If they say "For example please enter a date in MMDDYYYY Format like 10121998", then DO GIVE date in that format only, But do NOT return that example value 10121998).
             9. If it is asked for a phone number / contact number, look for the 'payer phone' or related field from the row_data.
 
             Handle the following special cases and scenarios:
@@ -289,7 +289,7 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
             1. Provider vs. Member/Participant choice: Always choose the provider number option when available.
             2. Numeric inputs: Enter TAX_ID, Participation ID, Health Claim ID, or Member ID as requested, using the appropriate field from row_data.
             3. Date of Birth: Enter in the format specified by the IVR (e.g., MMDDYYYY).
-            4. Reason for call: Prefer the number option for "Eligibility" or "Benefits" when asked.
+            4. Reason for call: Prefer the number option for "Claims" or "Claim Status" when asked.
             5. Healthcare provider identification: Confirm as a healthcare provider when asked by it's corresponding number.
             6. Coverage type: Choose a corresponding number option for "Medical" when asked about type of coverage.
             7. If the IVR prompt only allows / asks for a voice response (i.e., no numeric options), reply with 'field' set to 'Voice only' and 'value' set to the voice command that should be spoken 
@@ -309,6 +309,7 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
             13. If asked like "Please enter patient's 9 digit ID or the Social Security number of the primary account holder", then look for the relevant fields like Patient ID.
             14. If asked like "Say claims or press one" then go for that corresponding number. In short, Claims option should be preferred.
             15. If asked for "Please say or Patient's X ID" then X is company's name so in that case also, ignore X and look for patient id.
+            16. If it is asked for "Is it for Multiple Claims", prefer the number corresponding to "NO" option.
             Your response should be in the following JSON structure:
             {{
                 "value": "response_value",
@@ -340,11 +341,11 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
             3. IVR: "Please enter the patient's date of birth using 2 digits for the month, 2 digits for the day, and 4 digits for the year."
             Response: {{"value": "01011990", "field": "DOB"}}
 
-            4. IVR: "For eligibility and benefits press 2."
+            4. IVR: "For Claims, press 2."
             Response: {{"value": "2", "field": "press a number"}}
 
             5. IVR: "Please say your reason for calling. For example, you can say things like 'Claims' or 'Eligibility'."
-            Response: {{"value": "Eligibility", "field": "voice only"}}
+            Response: {{"value": "Claims", "field": "voice only"}}
 
             Remember:
             - Always prioritize provider options over member options.
@@ -379,9 +380,9 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
             3. Pay attention to negative instructions (e.g., "NOT") and follow them precisely, For example, if said "do NOT enter your provider_id, then don't prefer giving that field and value in response".
             4. Ignore any phone numbers provided for calling. (e.g., "For emergency, call 911." then do not prefer giving that number in response).
             5. If confirmation of information is requested and the information is incorrect, respond with the number corresponding to "NO" choice.
-            6. When asked for an NPI, look for the provider ID similar field.
+            6. When asked for an NPI, look for the National provider ID similar field.
             7. If asked for provider number, look for the provider ID similar field.
-            8. Do not enter example values provided by the IVR.
+            8. Do not enter example values provided by the IVR. (e.g., If they say "For example please enter a date in MMDDYYYY Format like 10121998", then DO GIVE date in that format only, But do NOT return that example value 10121998).
             9. If it is asked for a phone number / contact number, look for the 'payer phone' or related field from the row_data.
 
             Handle the following special cases and scenarios:
@@ -389,9 +390,9 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
             1. Provider vs. Member/Participant choice: Always choose the provider number option when available.
             2. Numeric inputs: Enter TAX_ID, Participation ID, Health Claim ID, or Member ID as requested, using the appropriate field from row_data.
             3. Date of Birth: Enter in the format specified by the IVR (e.g., MMDDYYYY).
-            4. Reason for call: Prefer the number option for "Eligibility" or "Benefits" when asked.
+            4. Reason for call: Prefer the number option for "Eligibility" or "Eligibility benefits" related field when asked.
             5. Healthcare provider identification: Confirm as a healthcare provider when asked by it's corresponding number.
-            6. Coverage type: Choose a corresponding number option for "Medical" when asked about type of coverage.
+            6. Coverage type: Choose a corresponding number option for "Medical" or "Mental Health" related when asked about type of coverage.
             7. If the IVR prompt only allows / asks for a voice response (i.e., no numeric options), reply with 'field' set to 'Voice only' and 'value' set to the voice command that should be spoken 
                 (told by an IVR. e.g., Please speak the subscriber identification number, including all alpha characters then response should be 
                 {{
@@ -407,8 +408,9 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
             12. If asked for a customer, don't reply to press a number corresponding to it. In short, don't allow response with press a number for customer, members like that. It should be only for provider.
                 (For example, If ivr ask for "You can say, I'm a customer or press one." then don't respond with press a number and value 1.)
             13. If asked like "Please enter patient's 9 digit ID or the Social Security number of the primary account holder", then look for the relevant fields like Patient ID.
-            14. If asked like "Say claims or press one" then go for that corresponding number. In short, Claims option should be preferred.
+            14. If asked like "Say Eligibility or press one" then go for that corresponding number. In short, Eligibility option should be preferred.
             15. If asked for "Please say or Patient's X ID" then X is company's name so in that case also, ignore X and look for patient id.
+            16. If it is asked for "Is it for Multiple Eligibility Benefits", prefer the number corresponding to "NO" option.
             Your response should be in the following JSON structure:
             {{
                 "value": "response_value",
@@ -440,7 +442,7 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
             3. IVR: "Please enter the patient's date of birth using 2 digits for the month, 2 digits for the day, and 4 digits for the year."
             Response: {{"value": "01011990", "field": "DOB"}}
 
-            4. IVR: "For eligibility and benefits press 2."
+            4. IVR: "For Eligibility, press 2."
             Response: {{"value": "2", "field": "press a number"}}
 
             5. IVR: "Please say your reason for calling. For example, you can say things like 'Claims' or 'Eligibility'."

@@ -828,6 +828,15 @@ const normalizePhone = (phone) => {
     try {
       const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
       console.log("************API Base URL:", apiBaseUrl);
+      
+      if(selectedOption === "Claims") { 
+        const audio = new Audio('/audio/Selected_Claims_flow.mp3');
+        audio.play();
+      } else if(selectedOption === "Eligibility") {
+        const audio = new Audio('/audio/Selected_Eligibility_flow.mp3');
+        audio.play();
+      }
+
       const response = await axios.post(`${apiBaseUrl}/initiate-call`, {
         phoneNumber: number,
         rowData: selectedRow,
