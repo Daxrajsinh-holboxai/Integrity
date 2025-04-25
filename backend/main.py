@@ -257,7 +257,7 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
     if selected_option == "Claims":
         prompt = f"""
             You are an advanced AI assistant designed to interpret IVR (Interactive Voice Response) prompts and extract relevant information from provided data. Your task is to analyze the IVR text and determine the appropriate response based on the given patient and provider details.
-
+            Your main role is to follow "Claims" role, so prefer that option whenver it is asked in IVR.
             You will be provided with two input variables:
 
             <row_data>
@@ -358,7 +358,7 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
     elif selected_option == "Eligibility":
         prompt = f"""
             You are an advanced AI assistant designed to interpret IVR (Interactive Voice Response) prompts and extract relevant information from provided data. Your task is to analyze the IVR text and determine the appropriate response based on the given patient and provider details.
-
+            Your main role is to follow "Eligibility" role, so prefer that option whenver it is asked in IVR.
             You will be provided with two input variables:
 
             <row_data>

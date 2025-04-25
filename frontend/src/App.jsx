@@ -509,38 +509,117 @@ const sendDTMFDigits = useCallback((digits) => {
 }, [agent, addNotification]);
 
 const playVoiceResponse = useCallback(async (responseData) => {
-  addNotification(`Playing voice response: ${responseData}`, 'audio');
+  addNotification(`Initiating voice response: ${responseData}`, 'audio');
+  
   try {
+    // 1. Verify agent is ready
     if (!agentRef.current) {
       addNotification('Agent not initialized', 'error');
       return false;
     }
 
-    // 1. Unmute the agent
-    await agentRef.current.unmute();
-    addNotification('Unmuted for voice response', 'info');
+    // 2. Create audio context and load file
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const response = await fetch('/audio/EPU910205736.mp3');
+    const arrayBuffer = await response.arrayBuffer();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
 
-    // 2. Play the provider.mp3 audio
-    const audio = new Audio('/audio/provider.mp3'); // Path to your MP3 file
-    audio.play()
-      .then(() => {
-        addNotification('Playing voice response...', 'audio');
-      })
-      .catch((error) => {
-        console.error("Error playing audio:", error);
-        addNotification(`Voice error: ${error.message}`, 'error');
-      });
+    const meterNode = audioContext.createAnalyser();
+    destination.connect(meterNode);
+    setInterval(() => {
+      const levels = new Uint8Array(meterNode.frequencyBinCount);
+      meterNode.getByteFrequencyData(levels);
+      console.log('Injection levels:', Math.max(...levels));
+    }, 200);
 
-    // 3. Clean up when done (optional)
-    audio.onended = async () => {
-      await agentRef.current.mute();
-      addNotification('Voice response completed', 'success');
+    // 3. Create virtual microphone
+    const destination = audioContext.createMediaStreamDestination();
+    const source = audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(destination);
+    
+    // 4. Audio verification system
+    const analyser = audioContext.createAnalyser();
+    source.connect(analyser);
+    const checkLevels = () => {
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(data);
+      const avg = data.reduce((a, b) => a + b) / data.length;
+      console.log('Audio generation level:', avg);
+      return avg > 5; // Threshold for "audio is playing"
     };
 
-    return true;
+    // 5. Create audio processing pipeline
+    const processor = audioContext.createScriptProcessor(2048, 1, 1);
+    let lastUnmuteTime = 0;
+    processor.onaudioprocess = (e) => {
+      const now = Date.now();
+      // Only process if unmuted within last 500ms
+      if (now - lastUnmuteTime < 500) {
+        const input = e.inputBuffer.getChannelData(0);
+        const output = e.outputBuffer.getChannelData(0);
+        for (let i = 0; i < input.length; i++) {
+          output[i] = input[i];
+        }
+      }
+    };
+    destination.stream.getAudioTracks()[0].enabled = false;
+    processor.connect(audioContext.destination);
+
+    // 6. Audio injection sequence
+    const injectAudio = async () => {
+      try {
+        // A. Start audio generation
+        source.start(0);
+        await new Promise(resolve => setTimeout(resolve, 100)); // Warm-up
+        
+        // B. Verify audio is being generated
+        if (!checkLevels()) {
+          throw new Error('Audio generation failed');
+        }
+        
+        // C. Unmute and enable processing
+        lastUnmuteTime = Date.now();
+        destination.stream.getAudioTracks()[0].enabled = true;
+        await agentRef.current.unmute();
+        addNotification('Injecting audio...', 'audio');
+
+        // D. Monitor injection
+        const injectionStart = Date.now();
+        const injectionMonitor = setInterval(() => {
+          const elapsed = Date.now() - injectionStart;
+          if (elapsed > audioBuffer.duration * 1000 + 2000) {
+            clearInterval(injectionMonitor);
+            addNotification('Injection timeout', 'warning');
+          }
+        }, 100);
+
+        // E. Clean up after completion
+        source.onended = async () => {
+          clearInterval(injectionMonitor);
+          await agentRef.current.mute();
+          destination.stream.getAudioTracks()[0].enabled = false;
+          processor.disconnect();
+          audioContext.close();
+          addNotification('Injection complete', 'success');
+        };
+
+        return true;
+      } catch (error) {
+        console.error('Injection failed:', error);
+        source.stop();
+        processor.disconnect();
+        audioContext.close();
+        return false;
+      }
+    };
+
+    // 7. Execute with fallback
+    return await injectAudio();
+    
   } catch (error) {
-    console.error("Voice response failed:", error);
-    addNotification(`Voice error: ${error.message}`, 'error');
+    console.error('Voice response failed:', error);
+    addNotification(`System error: ${error.message}`, 'error');
     return false;
   }
 }, [addNotification]);
