@@ -283,6 +283,9 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
             7. If asked for provider number, look for the provider ID similar field.
             8. Do not enter example values provided by the IVR. (e.g., If they say "For example please enter a date in MMDDYYYY Format like 10121998", then DO GIVE date in that format only, But do NOT return that example value 10121998).
             9. If it is asked for a phone number / contact number, look for the 'payer phone' or related field from the row_data.
+            10. Strictly AVOID giving response for "Eligibility" option or any other options as the current flow is "Claims" flow.
+            11. If you get any IVR text such as "Enter a number 1", "June 12, 1967" only With NO prior context which does NOT make sense, then do NOT send the response as it is, it should be considered as {{"value": "No matching data found", "field": "unknown"}} only.
+            12. PLEASE DO NOT GET CONFUSED WITH DATE OF BIRTH. STICK WITH THE SAME DATE OF BIRTH AS IT IS IN ROW_DATA.
 
             Handle the following special cases and scenarios:
             These responses should be in 'value' attribute of json response:
@@ -291,7 +294,7 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
             3. Date of Birth: Enter in the format specified by the IVR (e.g., MMDDYYYY).
             4. Reason for call: Prefer the number option for "Claims" or "Claim Status" when asked.
             5. Healthcare provider identification: Confirm as a healthcare provider when asked by it's corresponding number.
-            6. Coverage type: Choose a corresponding number option for "Medical" when asked about type of coverage.
+            6. Choose a corresponding number option for "Medical" or "Mental Health" , "Medicare Advantage" related when asked about type of coverage. Do NOT ever prefer options like 'Commercial plan', etc.
             7. If the IVR prompt only allows / asks for a voice response (i.e., no numeric options), reply with 'field' set to 'Voice only' and 'value' set to the voice command that should be spoken 
                 (told by an IVR. e.g., Please speak the subscriber identification number, including all alpha characters then response should be 
                 {{
@@ -310,7 +313,18 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
             14. If asked like "Say claims or press one" then go for that corresponding number. In short, Claims option should be preferred.
             15. If asked for "Please say or Patient's X ID" then X is company's name so in that case also, ignore X and look for patient id.
             16. If it is asked for "Is it for Multiple Claims", prefer the number corresponding to "NO" option.
-            Your response should be in the following JSON structure:
+            17. If there's statement related to confirmation like "Is that right?" if there's no corresponding number for "YES" then return the response stricty with  
+                {{
+                    "value": "Yes",
+                    "field": "voice only"
+                }}.
+            18. If IVR asks for statements like "Please Enter PatientID or memberID that does NOT include letters", 
+            then only respond the text with {{"value": <That ID with only numerical>, "field": "press a number"}}, do NOT exclude letters from Alphanumerical ID. 
+            Else, If it contains Alphanumerical value, then respond must be {{"value": <That Alphanumerical ID>, "field": "voice only"}}.
+            19. If IVR says any ID or thing such as "0212139202" then Do NOT send the response as it is, it should be considered as {{"value": "No matching data found", "field": "unknown"}} only.
+            20. If asked for scenarios like "You can say order an ID card, update other insurance, provide accident details or say help with something else", then prefer strict response with {{"value": "insurance", "field": "voice only"}} only.
+            
+            Your response should be in the following JSON structure (MUST!!! nothing else like spare text with this):
             {{
                 "value": "response_value",
                 "field": "source_field"
@@ -346,6 +360,9 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
 
             5. IVR: "Please say your reason for calling. For example, you can say things like 'Claims' or 'Eligibility'."
             Response: {{"value": "Claims", "field": "voice only"}}
+
+            6. IVR" "You can say "Eligibility" or press 1."
+            {{"value": "No matching data found", "field": "unknown"}}   (As it is Claims flow, that's why don't respond with press a number and value 1.)
 
             Remember:
             - Always prioritize provider options over member options.
@@ -384,6 +401,9 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
             7. If asked for provider number, look for the provider ID similar field.
             8. Do not enter example values provided by the IVR. (e.g., If they say "For example please enter a date in MMDDYYYY Format like 10121998", then DO GIVE date in that format only, But do NOT return that example value 10121998).
             9. If it is asked for a phone number / contact number, look for the 'payer phone' or related field from the row_data.
+            10. Strictly AVOID giving response for "Claims" option or any other options as the current flow is "Eligibility" flow.
+            11. If you get any IVR text such as "Enter a number 1", "June 12, 1967" only With NO prior context which does NOT make sense, then do NOT send the response as it is, it should be considered as {{"value": "No matching data found", "field": "unknown"}} only.
+            12. PLEASE DO NOT GET CONFUSED WITH DATE OF BIRTH. STICK WITH THE SAME DATE OF BIRTH AS IT IS IN ROW_DATA.
 
             Handle the following special cases and scenarios:
             These responses should be in 'value' attribute of json response:
@@ -392,7 +412,7 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
             3. Date of Birth: Enter in the format specified by the IVR (e.g., MMDDYYYY).
             4. Reason for call: Prefer the number option for "Eligibility" or "Eligibility benefits" related field when asked.
             5. Healthcare provider identification: Confirm as a healthcare provider when asked by it's corresponding number.
-            6. Coverage type: Choose a corresponding number option for "Medical" or "Mental Health" related when asked about type of coverage.
+            6. Choose a corresponding number option for "Medical" or "Mental Health" , "Medicare Advantage" related when asked about type of coverage. Do NOT prefer options like 'Commercial plan', etc.
             7. If the IVR prompt only allows / asks for a voice response (i.e., no numeric options), reply with 'field' set to 'Voice only' and 'value' set to the voice command that should be spoken 
                 (told by an IVR. e.g., Please speak the subscriber identification number, including all alpha characters then response should be 
                 {{
@@ -411,7 +431,18 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
             14. If asked like "Say Eligibility or press one" then go for that corresponding number. In short, Eligibility option should be preferred.
             15. If asked for "Please say or Patient's X ID" then X is company's name so in that case also, ignore X and look for patient id.
             16. If it is asked for "Is it for Multiple Eligibility Benefits", prefer the number corresponding to "NO" option.
-            Your response should be in the following JSON structure:
+            17. If there's statement related to confirmation like "Is that right?" if there's no corresponding number for "YES" then return the response stricty with  
+                {{
+                    "value": "Yes",
+                    "field": "voice only"
+                }}).
+            18. If IVR asks for statements like "Please Enter PatientID or memberID that does NOT include letters", 
+            then only respond the text with {{"value": <That ID with only numerical>, "field": "press a number"}}, do NOT exclude letters from Alphanumerical ID. 
+            Else, If it contains Alphanumerical value, then respond must be {{"value": <That Alphanumerical ID>, "field": "voice only"}}.
+            19. If IVR says any ID or thing such as "0212139202" or "2" then Do NOT send the response as it is with {{value: "0212139202", field: "unknown"}} or {{value: "2", field: "unknown"}}, it should be strictly considered as {{"value": "No matching data found", "field": "unknown"}} only.
+            20. If asked for scenarios like "You can say order an ID card, update other insurance, provide accident details or say help with something else", then prefer strict response with {{"value": "insurance", "field": "voice only"}} only.
+            
+            Your response should be in the following JSON structure (MUST!!! nothing else like spare text with this):
             {{
                 "value": "response_value",
                 "field": "source_field"
@@ -447,6 +478,10 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
 
             5. IVR: "Please say your reason for calling. For example, you can say things like 'Claims' or 'Eligibility'."
             Response: {{"value": "Eligibility", "field": "voice only"}}
+
+            6. IVR" "You can say "Claims" or press 1."
+            {{"value": "No matching data found", "field": "unknown"}}   (As it is Eligibility flow, that's why don't respond with press a number and value 1.)
+
 
             Remember:
             - Always prioritize provider options over member options.

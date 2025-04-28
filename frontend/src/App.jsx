@@ -33,6 +33,7 @@ function App() {
   const [agentConnected, setAgentConnected] = useState(false);
   const [callProgress, setCallProgress] = useState('IVR_INTERACTION');
   const [selectedOption, setSelectedOption] = useState('Claims'); // default is Claims
+  const [isCCPMinimized, setIsCCPMinimized] = useState(false);
 
   const silenceDetectorRef = useRef(null);
   const audioAnalyserRef = useRef(null);
@@ -509,117 +510,38 @@ const sendDTMFDigits = useCallback((digits) => {
 }, [agent, addNotification]);
 
 const playVoiceResponse = useCallback(async (responseData) => {
-  addNotification(`Initiating voice response: ${responseData}`, 'audio');
-  
+  addNotification(`Playing voice response: ${responseData}`, 'audio');
   try {
-    // 1. Verify agent is ready
     if (!agentRef.current) {
       addNotification('Agent not initialized', 'error');
       return false;
     }
 
-    // 2. Create audio context and load file
-    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    const response = await fetch('/audio/EPU910205736.mp3');
-    const arrayBuffer = await response.arrayBuffer();
-    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+    // 1. Unmute the agent
+    await agentRef.current.unmute();
+    addNotification('Unmuted for voice response', 'info');
 
-    const meterNode = audioContext.createAnalyser();
-    destination.connect(meterNode);
-    setInterval(() => {
-      const levels = new Uint8Array(meterNode.frequencyBinCount);
-      meterNode.getByteFrequencyData(levels);
-      console.log('Injection levels:', Math.max(...levels));
-    }, 200);
+    // 2. Play the provider.mp3 audio
+    const audio = new Audio('/audio/provider.mp3'); // Path to your MP3 file
+    audio.play()
+      .then(() => {
+        addNotification('Playing voice response...', 'audio');
+      })
+      .catch((error) => {
+        console.error("Error playing audio:", error);
+        addNotification(`Voice error: ${error.message}`, 'error');
+      });
 
-    // 3. Create virtual microphone
-    const destination = audioContext.createMediaStreamDestination();
-    const source = audioContext.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(destination);
-    
-    // 4. Audio verification system
-    const analyser = audioContext.createAnalyser();
-    source.connect(analyser);
-    const checkLevels = () => {
-      const data = new Uint8Array(analyser.frequencyBinCount);
-      analyser.getByteFrequencyData(data);
-      const avg = data.reduce((a, b) => a + b) / data.length;
-      console.log('Audio generation level:', avg);
-      return avg > 5; // Threshold for "audio is playing"
+    // 3. Clean up when done (optional)
+    audio.onended = async () => {
+      await agentRef.current.mute();
+      addNotification('Voice response completed', 'success');
     };
 
-    // 5. Create audio processing pipeline
-    const processor = audioContext.createScriptProcessor(2048, 1, 1);
-    let lastUnmuteTime = 0;
-    processor.onaudioprocess = (e) => {
-      const now = Date.now();
-      // Only process if unmuted within last 500ms
-      if (now - lastUnmuteTime < 500) {
-        const input = e.inputBuffer.getChannelData(0);
-        const output = e.outputBuffer.getChannelData(0);
-        for (let i = 0; i < input.length; i++) {
-          output[i] = input[i];
-        }
-      }
-    };
-    destination.stream.getAudioTracks()[0].enabled = false;
-    processor.connect(audioContext.destination);
-
-    // 6. Audio injection sequence
-    const injectAudio = async () => {
-      try {
-        // A. Start audio generation
-        source.start(0);
-        await new Promise(resolve => setTimeout(resolve, 100)); // Warm-up
-        
-        // B. Verify audio is being generated
-        if (!checkLevels()) {
-          throw new Error('Audio generation failed');
-        }
-        
-        // C. Unmute and enable processing
-        lastUnmuteTime = Date.now();
-        destination.stream.getAudioTracks()[0].enabled = true;
-        await agentRef.current.unmute();
-        addNotification('Injecting audio...', 'audio');
-
-        // D. Monitor injection
-        const injectionStart = Date.now();
-        const injectionMonitor = setInterval(() => {
-          const elapsed = Date.now() - injectionStart;
-          if (elapsed > audioBuffer.duration * 1000 + 2000) {
-            clearInterval(injectionMonitor);
-            addNotification('Injection timeout', 'warning');
-          }
-        }, 100);
-
-        // E. Clean up after completion
-        source.onended = async () => {
-          clearInterval(injectionMonitor);
-          await agentRef.current.mute();
-          destination.stream.getAudioTracks()[0].enabled = false;
-          processor.disconnect();
-          audioContext.close();
-          addNotification('Injection complete', 'success');
-        };
-
-        return true;
-      } catch (error) {
-        console.error('Injection failed:', error);
-        source.stop();
-        processor.disconnect();
-        audioContext.close();
-        return false;
-      }
-    };
-
-    // 7. Execute with fallback
-    return await injectAudio();
-    
+    return true;
   } catch (error) {
-    console.error('Voice response failed:', error);
-    addNotification(`System error: ${error.message}`, 'error');
+    console.error("Voice response failed:", error);
+    addNotification(`Voice error: ${error.message}`, 'error');
     return false;
   }
 }, [addNotification]);
@@ -688,23 +610,32 @@ const handleSetActiveConnection = useCallback((connection) => {
 
 const normalizePhone = (phone) => {
   if (!phone) {
-    return ""; // Return an empty string if phone is null or undefined
+    return ""; // Handle null or undefined
   }
 
-  const phoneStr = String(phone); // Ensure phone is a string
+  const phoneStr = String(phone).trim(); // Ensure it's a string and trim whitespace
 
-  const digits = phoneStr.replace(/\D/g, "");
-  
+  // Remove anything that's not a digit
+  let digits = phoneStr.replace(/\D/g, "");
+
+  // If there are more than 11 digits, assume extension is present; cut to 11
+  if (digits.length > 11 && digits.startsWith("1")) {
+    digits = digits.slice(0, 11);
+  } else if (digits.length > 10 && !digits.startsWith("1")) {
+    digits = digits.slice(0, 10);
+  }
+
+  // Now normalize
   if (digits.length === 10) {
     return `+1${digits}`;
   }
-  
   if (digits.length === 11 && digits.startsWith("1")) {
     return `+${digits}`;
   }
-  
-  return ""; // Return an empty string if phone number format is not valid
+
+  return ""; // Invalid phone number
 };
+
 
 
 
@@ -1256,20 +1187,63 @@ const normalizePhone = (phone) => {
   
       {/* RIGHT SIDE */}
       <div
-        ref={ccpContainerRef}
-        style={{
-          width: "340px",
-          height: "600px",
-          position: "fixed",
-          bottom: "20px",
-          right: "20px",
-          border: "1px solid #ccc",
-          zIndex: 1000,
-          backgroundColor: "white",
-          borderRadius: "4px",
-          boxShadow: "0 2px 10px rgba(0,0,0,0.1)"
-        }}
-      />
+    ref={ccpContainerRef}
+    style={{
+      width: "340px",
+      height: "600px",
+      position: "fixed",
+      bottom: "20px",
+      right: isCCPMinimized ? "-340px" : "20px", // Off-screen when minimized
+      border: "1px solid #ccc",
+      zIndex: 1000,
+      backgroundColor: "white",
+      borderRadius: "4px",
+      boxShadow: "0 2px 10px rgba(0,0,0,0.1)",
+      transition: "right 0.3s ease",
+    }}
+  >
+    <button
+      onClick={() => setIsCCPMinimized(true)}
+      className="ccp-minimize-button"
+      style={{
+        position: "absolute",
+        top: "-50px",
+        right: "-35px",
+        background: "transparent",
+        border: "none",
+        cursor: "pointer",
+        fontSize: "26px",
+        color: "#666",
+      }}
+    >
+      ▶️
+    </button>
+  </div>
+
+  {/* Maximize button (only shown when minimized) */}
+  {isCCPMinimized && (
+    <button
+      onClick={() => setIsCCPMinimized(false)}
+      style={{
+        position: "fixed",
+        right: "0",
+        bottom: "20px",
+        width: "40px",
+        height: "40px",
+        background: "white",
+        border: "1px solid #ccc",
+        borderRadius: "4px 0 0 4px",
+        cursor: "pointer",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        boxShadow: "0 2px 5px rgba(0,0,0,0.1)",
+        zIndex: 1000,
+      }}
+    >
+      ◀️
+    </button>
+  )}
   
       <div className="p-6 bg-gray-100 overflow-y-auto" style={{ height: '100vh' }}>
         {renderExcelTable()}
