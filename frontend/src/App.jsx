@@ -509,45 +509,35 @@ const sendDTMFDigits = useCallback((digits) => {
   }
 }, [agent, addNotification]);
 
-const playVoiceResponse = useCallback(async (responseData) => {
-  addNotification(`Playing voice response: ${responseData}`, 'audio');
-  try {
-    if (!agentRef.current) {
-      addNotification('Agent not initialized', 'error');
-      return false;
-    }
-
-    // 1. Unmute the agent
-    await agentRef.current.unmute();
-    addNotification('Unmuted for voice response', 'info');
-
-    // 2. Play the provider.mp3 audio
-    const audio = new Audio('/audio/provider.mp3'); // Path to your MP3 file
-    audio.play()
-      .then(() => {
-        addNotification('Playing voice response...', 'audio');
-      })
-      .catch((error) => {
-        console.error("Error playing audio:", error);
-        addNotification(`Voice error: ${error.message}`, 'error');
-      });
-
-    // 3. Clean up when done (optional)
-    audio.onended = async () => {
-      await agentRef.current.mute();
-      addNotification('Voice response completed', 'success');
-    };
-
-    return true;
-  } catch (error) {
-    console.error("Voice response failed:", error);
-    addNotification(`Voice error: ${error.message}`, 'error');
-    return false;
-  }
+const playVoiceResponse = useCallback(async (responseText) => {
+  addNotification(`Playing voice response for: ${responseText}`, 'audio');
+  
+  // Send through BroadcastChannel
+  const channel = new BroadcastChannel('voice_channel');
+  channel.postMessage({ 
+    type: 'play_audio', 
+    text: responseText,
+    timestamp: Date.now()
+  });
+  
+  // Fallback to localStorage
+  localStorage.setItem('voiceResponseText', JSON.stringify({
+    text: responseText,
+    timestamp: Date.now()
+  }));
+  
+  // Close channel after sending
+  setTimeout(() => channel.close(), 1000);
 }, [addNotification]);
 
 
-
+useEffect(() => {
+  return () => {
+    if (window.voiceWindow && !window.voiceWindow.closed) {
+      window.voiceWindow.close();
+    }
+  };
+}, []);
 
 
   // Function to handle DTMF sending from backend
