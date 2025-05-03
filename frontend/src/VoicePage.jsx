@@ -82,41 +82,41 @@ export default function VoicePage() {
       }
     
       console.log("Handling play command with text:", responseText);
-      const audioUrl = `/audio/${responseText}.mp3`;
-      console.log("Audio URL:", audioUrl);
     
-      fetch(audioUrl)
-        .then(response => {
-          if (!response.ok) throw new Error('Audio file not found');
-          console.log('Audio file found, preparing to play...');
+      // Use SpeechSynthesis API to speak the responseText
+      const speechSynthesis = window.speechSynthesis;
     
-          if (audioRef.current) {
-            audioRef.current.pause();
-          }
+      if (speechSynthesis) {
+        const utterance = new SpeechSynthesisUtterance(responseText);
+        // You can customize the voice, pitch, and rate here
+        utterance.pitch = 1; // Default pitch (range: 0 to 2)
+        utterance.rate = 1;  // Default rate (range: 0.1 to 10)
+        utterance.voice = speechSynthesis.getVoices().find(voice => voice.lang === 'en-US') || null;
     
-          audioRef.current = new Audio(audioUrl);
+        // Event listeners for speech events
+        utterance.onstart = () => {
+          console.log('Speech started');
+          setIsPlaying(true);
+        };
     
-          // Listen for the 'ended' event to stop the "Speaking..." message
-          audioRef.current.onended = () => {
-            console.log('Audio playback finished');
-            setIsPlaying(false); // Update the state to stop showing "Speaking..."
-          };
+        utterance.onend = () => {
+          console.log('Speech finished');
+          setIsPlaying(false); // Update state to stop showing "Speaking..."
+        };
     
-          audioRef.current.play()
-            .then(() => {
-              setIsPlaying(true);
-              console.log('Audio is playing');
-            })
-            .catch(error => {
-              console.error('Playback failed:', error);
-              addNotification('Playback failed:', error);
-            });
-        })
-        .catch(error => {
-          console.error('Audio validation failed:', error);
-          addNotification('Audio validation failed:', error);
-        });
+        utterance.onerror = (error) => {
+          console.error('Speech synthesis error:', error);
+          addNotification('Speech synthesis error', 'error');
+        };
+    
+        // Play the speech
+        speechSynthesis.speak(utterance);
+      } else {
+        console.error('SpeechSynthesis API is not supported');
+        addNotification('SpeechSynthesis API is not supported', 'error');
+      }
     };
+    
     
 
     ws.onopen = () => {

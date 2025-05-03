@@ -560,7 +560,6 @@ const playVoiceResponse = useCallback(async (responseText) => {
   }
 }, [addNotification]);
 
-
   // Function to handle DTMF sending from backend
   // const handleSendDTMF = async (digits) => {
 

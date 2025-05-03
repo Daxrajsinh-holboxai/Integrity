@@ -322,11 +322,11 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
             5. If confirmation of information is requested and the information is incorrect, respond with the number corresponding to "NO" choice.
             6. When asked for an NPI, look for the National provider ID similar field.
             7. If asked for provider number, look for the provider ID similar field.
-            8. Do not enter example values provided by the IVR. (e.g., If they say "For example please enter a date in MMDDYYYY Format like 10121998", then DO GIVE date in that format only, But do NOT return that example value 10121998).
+            8. Do not enter example values provided by the IVR. (e.g., If they say "For example please enter a date in MMDDYYYY Format like 10121998", But do NOT return that example value 10121998).
             9. If it is asked for a phone number / contact number, look for the 'payer phone' or related field from the row_data.
             10. Strictly AVOID giving response for "Eligibility" option or any other options as the current flow is "Claims" flow.
             11. If you get any IVR text such as "Enter a number 1", "June 12, 1967" only With NO prior context which does NOT make sense, then do NOT send the response as it is, it should be considered as {{"value": "No matching data found", "field": "unknown"}} only.
-            12. PLEASE DO NOT GET CONFUSED WITH DATE OF BIRTH. STICK WITH THE SAME DATE OF BIRTH AS IT IS IN ROW_DATA.
+            12. When questioned about the date of birth, stick with the same date of birth as it is in row_data, even if it is multiple times query.
 
             Handle the following special cases and scenarios:
             These responses should be in 'value' attribute of json response:
@@ -342,7 +342,7 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
                     "value": "<value that need to be spoken>",
                     "field": "voice only"
                 }}).
-            8. (IMPORTANT POINT) If there's an option for pressing a number other than fields I mentioned, like irrelevant fields like business, e-commerce, For network contracts or credentialing, etc. then do NOT respond there with "press a number". 
+            8. (IMPORTANT POINT) If there's an option for pressing a number other than fields I mentioned, irrelevant fields like business, e-commerce, For network contracts or credentialing, etc. then do NOT respond there with "press a number". 
             9. If the IVR says it's transferring to an agent (e.g., "please wait while we connect you to an agent" or any similar statements telling for 
                 "please wait" or "please hold", "transferring your call", "connecting to a representative"), respond with:
                 {{"value": "transferring", "field": "transfer to agent"}}
@@ -440,11 +440,11 @@ async def process_ivr_prompt(contact_id: str, ivr_text: str):
             5. If confirmation of information is requested and the information is incorrect, respond with the number corresponding to "NO" choice.
             6. When asked for an NPI, look for the National provider ID similar field.
             7. If asked for provider number, look for the provider ID similar field.
-            8. Do not enter example values provided by the IVR. (e.g., If they say "For example please enter a date in MMDDYYYY Format like 10121998", then DO GIVE date in that format only, But do NOT return that example value 10121998).
+            8. Do not enter example values provided by the IVR. (e.g., If they say "For example please enter a date in MMDDYYYY Format like 10121998", But do NOT return that example value 10121998).
             9. If it is asked for a phone number / contact number, look for the 'payer phone' or related field from the row_data.
             10. Strictly AVOID giving response for "Claims" option or any other options as the current flow is "Eligibility" flow.
             11. If you get any IVR text such as "Enter a number 1", "June 12, 1967" only With NO prior context which does NOT make sense, then do NOT send the response as it is, it should be considered as {{"value": "No matching data found", "field": "unknown"}} only.
-            12. PLEASE DO NOT GET CONFUSED WITH DATE OF BIRTH. STICK WITH THE SAME DATE OF BIRTH AS IT IS IN ROW_DATA.
+            12. When questioned about the date of birth, stick with the same date of birth as it is in row_data, even if it is multiple times query.
 
             Handle the following special cases and scenarios:
             These responses should be in 'value' attribute of json response:
