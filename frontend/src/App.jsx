@@ -509,35 +509,56 @@ const sendDTMFDigits = useCallback((digits) => {
   }
 }, [agent, addNotification]);
 
+useEffect(() => {
+  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
+  const ws = new WebSocket(`${apiBaseUrl.replace('http', 'ws')}/voice-ws`);
+
+  const handleWebSocketMessage = (event) => {
+    if (typeof event.data === 'string') {
+      handlePlayCommand(event.data);
+    }
+  };
+
+  ws.addEventListener('message', handleWebSocketMessage);
+
+  // Reconnect logic
+  const interval = setInterval(() => {
+    if (ws.readyState === WebSocket.CLOSED) {
+      ws.reconnect();
+    }
+  }, 5000);
+
+  return () => {
+    clearInterval(interval);
+    ws.removeEventListener('message', handleWebSocketMessage);
+    ws.close();
+  };
+}, []);
+
 const playVoiceResponse = useCallback(async (responseText) => {
   addNotification(`Playing voice response for: ${responseText}`, 'audio');
   
-  // Send through BroadcastChannel
-  const channel = new BroadcastChannel('voice_channel');
-  channel.postMessage({ 
-    type: 'play_audio', 
-    text: responseText,
-    timestamp: Date.now()
-  });
-  
-  // Fallback to localStorage
-  localStorage.setItem('voiceResponseText', JSON.stringify({
-    text: responseText,
-    timestamp: Date.now()
-  }));
-  
-  // Close channel after sending
-  setTimeout(() => channel.close(), 1000);
-}, [addNotification]);
-
-
-useEffect(() => {
-  return () => {
-    if (window.voiceWindow && !window.voiceWindow.closed) {
-      window.voiceWindow.close();
+  try {
+    if (!agentRef.current) {
+      addNotification('Agent not initialized', 'error');
+      return false;
     }
-  };
-}, []);
+
+    await agentRef.current.unmute();
+    addNotification('Unmuted for voice response', 'info');
+
+    const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
+    await axios.post(`${apiBaseUrl}/trigger-voice`, { 
+      text: responseText 
+    });
+
+    await agentRef.current.mute();
+    addNotification('Voice response completed', 'success');
+  } catch (error) {
+    console.error('Failed to send voice response:', error);
+    addNotification('Failed to send voice response', 'error');
+  }
+}, [addNotification]);
 
 
   // Function to handle DTMF sending from backend

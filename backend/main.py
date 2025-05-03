@@ -1,5 +1,5 @@
 import json
-from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, Request
 from pydantic import BaseModel
 import boto3
 import os
@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict
 from fastapi.responses import JSONResponse
+from typing import Set
 from botocore.config import Config
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -70,6 +71,8 @@ bedrock = boto3.client(
 
 # transcribe = boto3.client('transcribe', region_name=os.getenv("AWS_REGION"))
 
+voice_clients: Set[WebSocket] = set()
+
 def hash_segment(content: str) -> str:
     """Generate a hash for content after normalizing whitespace and case."""
     normalized = " ".join(content.strip().lower().split())
@@ -114,6 +117,44 @@ def sanitize_for_json(obj):
     elif isinstance(obj, datetime):
         return obj.isoformat()
     return obj
+
+# Ensure WebSocket endpoint properly broadcasts messages
+@app.websocket("/voice-ws")
+async def voice_websocket(websocket: WebSocket):
+    print("WebSocket connection initiated")
+    await websocket.accept()
+    voice_clients.add(websocket)
+    try:
+        while True:
+            # Keep connection alive
+            message = await websocket.receive_text()
+            print(f"Received message: {message}")
+    except WebSocketDisconnect:
+        print("WebSocket disconnected")
+        voice_clients.remove(websocket)
+    finally:
+        if websocket in voice_clients:
+            voice_clients.remove(websocket)
+            print("WebSocket removed from clients")
+
+
+@app.post("/trigger-voice")
+async def trigger_voice(request: Request):
+    data = await request.json()
+    response_text = data.get("text")
+    print(f"Triggering voice with text: {response_text}")
+    
+    # Broadcast to all connected voice clients
+    for client in voice_clients:
+        try:
+            await client.send_text(response_text)
+            print(f"Sent message to client: {response_text}")
+        except Exception as e:
+            print(f"Error sending to client: {e}")
+            voice_clients.remove(client)
+    
+    return {"status": "success"}
+
 
 @app.post("/fetch-call-transcript/{contact_id}")
 async def fetch_analysis_segments(contact_id: str):
