@@ -32,6 +32,9 @@ function App() {
   const [lastTranscriptUpdate, setLastTranscriptUpdate] = useState(0);  
   const [agentConnected, setAgentConnected] = useState(false);
   const [callProgress, setCallProgress] = useState('IVR_INTERACTION');
+  const [selectedOption, setSelectedOption] = useState('Claims'); // default is Claims
+  const [isCCPMinimized, setIsCCPMinimized] = useState(false);
+
   const silenceDetectorRef = useRef(null);
   const audioAnalyserRef = useRef(null);
   const mediaStreamRef = useRef(null);
@@ -85,6 +88,9 @@ const messages = {
     contactIdRef.current = contactId;
   }, [contactId]);
 
+  const handleOptionChange = (event) => {
+    setSelectedOption(event.target.value);
+  };
 
   useEffect(() => {
     // Tick Sound: Small, quick beep for notifications
@@ -503,45 +509,56 @@ const sendDTMFDigits = useCallback((digits) => {
   }
 }, [agent, addNotification]);
 
-const playVoiceResponse = useCallback(async () => {
-  // addNotification('Playing voice response', 'audio');
-  const connection = activeConnectionRef.current || 
-                    agent?.getContacts()?.[0]?.getAgentConnection();
-  if (!connection || !connection.isActive()) {
-    addNotification('No active call connection for audio', 'error');
-    return false;
-  }
+useEffect(() => {
+  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
+  const ws = new WebSocket(`${apiBaseUrl.replace('http', 'ws')}/voice-ws`);
 
+  const handleWebSocketMessage = (event) => {
+    if (typeof event.data === 'string') {
+      handlePlayCommand(event.data);
+    }
+  };
+
+  ws.addEventListener('message', handleWebSocketMessage);
+
+  // Reconnect logic
+  const interval = setInterval(() => {
+    if (ws.readyState === WebSocket.CLOSED) {
+      ws.reconnect();
+    }
+  }, 5000);
+
+  return () => {
+    clearInterval(interval);
+    ws.removeEventListener('message', handleWebSocketMessage);
+    ws.close();
+  };
+}, []);
+
+const playVoiceResponse = useCallback(async (responseText) => {
+  addNotification(`Playing voice response for: ${responseText}`, 'audio');
+  
   try {
-    const mediaController = connection.getMediaController();
-    // const dummyAudioUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3";
-    
-    addNotification('Please Send voice response to call', 'audio');
-    
-    // // Play the audio through the call connection
-    // await new Promise((resolve, reject) => {
-    //   mediaController.playAudio({
-    //     url: dummyAudioUrl,
-    //     interrupt: true
-    //   }, {
-    //     success: () => {
-    //       addNotification('Voice response sent successfully', 'audio');
-    //       resolve();
-    //     },
-    //     failure: (error) => {
-    //       addNotification(`Voice response failed: ${error.message}`, 'error');
-    //       reject(error);
-    //     }
-    //   });
-    // });
-    
-    return true;
+    if (!agentRef.current) {
+      addNotification('Agent not initialized', 'error');
+      return false;
+    }
+
+    await agentRef.current.unmute();
+    addNotification('Unmuted for voice response', 'info');
+
+    const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
+    await axios.post(`${apiBaseUrl}/trigger-voice`, { 
+      text: responseText 
+    });
+
+    await agentRef.current.mute();
+    addNotification('Voice response completed', 'success');
   } catch (error) {
-    console.error("Voice response failed:", error);
-    addNotification(`Voice response failed: ${error.message}`, 'error');
-    return false;
+    console.error('Failed to send voice response:', error);
+    addNotification('Failed to send voice response', 'error');
   }
-}, [addNotification, agent]);
+}, [addNotification]);
 
   // Function to handle DTMF sending from backend
   // const handleSendDTMF = async (digits) => {
@@ -563,7 +580,7 @@ const playVoiceResponse = useCallback(async () => {
   // };
 
   // Add notification cleanup effect
-useEffect(() => {
+  useEffect(() => {
   const interval = setInterval(() => {
     setNotifications(prev => prev.filter(n => 
       Date.now() - new Date(n.timestamp) < 5000
@@ -603,23 +620,32 @@ const handleSetActiveConnection = useCallback((connection) => {
 
 const normalizePhone = (phone) => {
   if (!phone) {
-    return ""; // Return an empty string if phone is null or undefined
+    return ""; // Handle null or undefined
   }
 
-  const phoneStr = String(phone); // Ensure phone is a string
+  const phoneStr = String(phone).trim(); // Ensure it's a string and trim whitespace
 
-  const digits = phoneStr.replace(/\D/g, "");
-  
+  // Remove anything that's not a digit
+  let digits = phoneStr.replace(/\D/g, "");
+
+  // If there are more than 11 digits, assume extension is present; cut to 11
+  if (digits.length > 11 && digits.startsWith("1")) {
+    digits = digits.slice(0, 11);
+  } else if (digits.length > 10 && !digits.startsWith("1")) {
+    digits = digits.slice(0, 10);
+  }
+
+  // Now normalize
   if (digits.length === 10) {
     return `+1${digits}`;
   }
-  
   if (digits.length === 11 && digits.startsWith("1")) {
     return `+${digits}`;
   }
-  
-  return ""; // Return an empty string if phone number format is not valid
+
+  return ""; // Invalid phone number
 };
+
 
 
 
@@ -742,7 +768,7 @@ const normalizePhone = (phone) => {
         }
 
         if (data.responseSent.field === "voice only") {
-          playVoiceResponse();
+          playVoiceResponse(data.responseSent.value);
         }
 
         // Handle call termination
@@ -822,9 +848,19 @@ const normalizePhone = (phone) => {
     try {
       const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
       console.log("************API Base URL:", apiBaseUrl);
+      
+      if(selectedOption === "Claims") { 
+        const audio = new Audio('/audio/Selected_Claims_flow.mp3');
+        audio.play();
+      } else if(selectedOption === "Eligibility") {
+        const audio = new Audio('/audio/Selected_Eligibility_flow.mp3');
+        audio.play();
+      }
+
       const response = await axios.post(`${apiBaseUrl}/initiate-call`, {
         phoneNumber: number,
-        rowData: selectedRow
+        rowData: selectedRow,
+        selectedOption: selectedOption
       });
 
       const contactId = response.data.contact_id;
@@ -998,10 +1034,55 @@ const normalizePhone = (phone) => {
   return (
     <div className="grid grid-cols-[40%_60%] h-screen overflow-hidden font-sans">
       <NotificationToast />
+  
+      {/* Top Center Claims/Eligibility Selection with Animated Slider */}
+      <div className="absolute top-6 left-1/2 transform -translate-x-1/2 z-50">
+        <div
+          className="relative inline-block w-56 h-12 rounded-lg border-4 border-transparent"
+          style={{
+            boxShadow: "0 0 10px rgba(59, 130, 246, 0.7)", // Glowy border effect
+          }}
+        >
+          {/* Rectangle Box for Claims/Eligibility */}
+          <div
+            className={`absolute inset-0 flex items-center justify-between text-sm font-semibold rounded-lg p-1 transition-all duration-300 ease-in-out`}
+            onClick={() => setSelectedOption(selectedOption === 'Claims' ? 'Eligibility' : 'Claims')}
+            style={{
+              background: selectedOption === 'Claims' ? 'linear-gradient(to right, #3b82f6 50%, #d1d5db 50%)' : 'linear-gradient(to right, #d1d5db 50%, #3b82f6 50%)',
+            }}
+          >
+            {/* Claims Text */}
+            <span
+              className={`flex-1 text-center cursor-pointer ${
+                selectedOption === 'Claims' ? 'text-white' : 'text-black'
+              }`}
+            >
+              Claims
+            </span>
+  
+            {/* Eligibility Text */}
+            <span
+              className={`flex-1 text-center cursor-pointer ${
+                selectedOption === 'Eligibility' ? 'text-white' : 'text-black'
+              }`}
+            >
+              Eligibility
+            </span>
+          </div>
+  
+          {/* Slider below the rectangle */}
+          <div
+            className={`absolute bottom-0 left-0 w-1/2 h-2 bg-blue-600 rounded-full transition-all duration-300 ease-in-out ${
+              selectedOption === 'Eligibility' ? 'translate-x-full' : ''
+            }`}
+          ></div>
+        </div>
+      </div>
+  
       {/* LEFT SIDE - Fixed width */}
       <div className="p-6 bg-white border-r border-gray-300 text-gray-900 overflow-y-auto">
         <h1 className="text-2xl font-bold mb-6">Integrity: Call Automation</h1>
-
+  
         {/* File upload */}
         <div className="mb-6">
           <label className="block text-sm font-medium mb-1">Upload Excel (.xlsx)</label>
@@ -1012,105 +1093,91 @@ const normalizePhone = (phone) => {
             className="w-full p-2 border border-gray-300 rounded-lg"
           />
         </div>
-
+  
         {/* Phone display (read-only) */}
-<div className="mb-6">
-  <label className="block text-sm font-medium mb-1">Selected Phone Number</label>
-  <div className="w-full p-3 border border-gray-300 rounded-lg bg-gray-100">
-    {number ? (
-      <span>{number}</span>
-    ) : (
-      <span className="text-gray-400">No number selected</span>
-    )}
-  </div>
-</div>
-
-<button
-        onClick={handleCall}
-        disabled={!number || loading || isAutoCallEnabled}
-        className="w-full p-3 text-white font-semibold rounded-lg mb-6 transition 
-                   bg-black hover:bg-gray-800 
-                   disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed"
-      >
-        {buttonText()}
-      </button>
-
-      <div className="mb-4">
-  <label className="block text-sm font-medium mb-1">
-    Delay between calls (seconds):
-  </label>
-  <input
-    type="number"
-    value={nextCallDelay / 1000}
-    onChange={(e) => setNextCallDelay(Math.max(1, e.target.value) * 1000)}
-    className="w-full p-2 border border-gray-300 rounded-lg"
-    min="1"
-    max="60"
-  />
-</div>
-
-{isAutoCallEnabled && pendingProceed && (
-  <div className="mb-4 p-3 bg-yellow-100 rounded-lg">
-    <p className="text-sm mb-2">Proceed to next call (Row {currentRowIndex + 2})?</p>
-    <div className="flex gap-2">
-      <button
-        onClick={handleProceed}  // Proceed to next row when user confirms
-        className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
-      >
-        Proceed to Row {currentRowIndex + 2}
-      </button>
-      <button
-        onClick={() => {
-          setIsAutoCallEnabled(false);
-          setPendingProceed(false);
-          setCurrentRowIndex(0); // Reset to the first row
-        }}
-        className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
-      >
-        Stop Sequence
-      </button>
-    </div>
-  </div>
-)}
-
-{readyToStartAutoCall && !isAutoCallEnabled && (
-  <div className="mb-4 p-3 bg-blue-100 rounded-lg">
-    <p className="text-sm mb-2">Ready to start auto-call sequence ({excelData.length} contacts)</p>
-    <button
-      onClick={() => {
-        setIsAutoCallEnabled(true);
-        setReadyToStartAutoCall(false);
-      }}
-      className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-    >
-      Start Auto Call
-    </button>
-  </div>
-)}
-
-{/* <div className="mb-4">
-  <label className="flex items-center space-x-2">
-    <input
-      type="checkbox"
-      checked={requiresConfirmation}
-      onChange={(e) => setRequiresConfirmation(e.target.checked)}
-      className="form-checkbox"
-    />
-    <span className="text-sm">Require confirmation between calls</span>
-  </label>
-</div> */}
-
-
+        <div className="mb-6">
+          <label className="block text-sm font-medium mb-1">Selected Phone Number</label>
+          <div className="w-full p-3 border border-gray-300 rounded-lg bg-gray-100">
+            {number ? (
+              <span>{number}</span>
+            ) : (
+              <span className="text-gray-400">No number selected</span>
+            )}
+          </div>
+        </div>
+  
+        <button
+          onClick={handleCall}
+          disabled={!number || loading || isAutoCallEnabled}
+          className="w-full p-3 text-white font-semibold rounded-lg mb-6 transition 
+                     bg-black hover:bg-gray-800 
+                     disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed"
+        >
+          {buttonText()}
+        </button>
+  
+        <div className="mb-4">
+          <label className="block text-sm font-medium mb-1">
+            Delay between calls (seconds):
+          </label>
+          <input
+            type="number"
+            value={nextCallDelay / 1000}
+            onChange={(e) => setNextCallDelay(Math.max(1, e.target.value) * 1000)}
+            className="w-full p-2 border border-gray-300 rounded-lg"
+            min="1"
+            max="60"
+          />
+        </div>
+  
+        {isAutoCallEnabled && pendingProceed && (
+          <div className="mb-4 p-3 bg-yellow-100 rounded-lg">
+            <p className="text-sm mb-2">Proceed to next call (Row {currentRowIndex + 2})?</p>
+            <div className="flex gap-2">
+              <button
+                onClick={handleProceed}  // Proceed to next row when user confirms
+                className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
+              >
+                Proceed to Row {currentRowIndex + 2}
+              </button>
+              <button
+                onClick={() => {
+                  setIsAutoCallEnabled(false);
+                  setPendingProceed(false);
+                  setCurrentRowIndex(0); // Reset to the first row
+                }}
+                className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+              >
+                Stop Sequence
+              </button>
+            </div>
+          </div>
+        )}
+  
+        {readyToStartAutoCall && !isAutoCallEnabled && (
+          <div className="mb-4 p-3 bg-blue-100 rounded-lg">
+            <p className="text-sm mb-2">Ready to start auto-call sequence ({excelData.length} contacts)</p>
+            <button
+              onClick={() => {
+                setIsAutoCallEnabled(true);
+                setReadyToStartAutoCall(false);
+              }}
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+            >
+              Start Auto Call
+            </button>
+          </div>
+        )}
+  
         {/* Status messages */}
         {message && <div className="text-sm mb-4 text-blue-700">{message}</div>}
         {getStatusMessage()}
-
+  
         {/* Transcript - Fixed height */}
         {transcriptDisplay()}
-
+  
         {agentConnected && <AgentConnectionPopup />}
-
-
+  
         <div className="mt-4 p-3 bg-blue-50 rounded-lg">
           <h3 className="font-semibold mb-2">Automated Responses:</h3>
           {sentResponses.length === 0 ? (
@@ -1127,29 +1194,79 @@ const normalizePhone = (phone) => {
           )}
         </div>
       </div>
-
+  
       {/* RIGHT SIDE */}
       <div
-      ref={ccpContainerRef}
+    ref={ccpContainerRef}
+    style={{
+      width: "340px",
+      height: "600px",
+      position: "fixed",
+      bottom: "20px",
+      right: isCCPMinimized ? "-340px" : "20px", // Off-screen when minimized
+      border: "1px solid #ccc",
+      zIndex: 1000,
+      backgroundColor: "white",
+      borderRadius: "4px",
+      boxShadow: "0 2px 10px rgba(0,0,0,0.1)",
+      transition: "right 0.3s ease",
+    }}
+  >
+    <button
+      onClick={() => setIsCCPMinimized(true)}
+      className="ccp-minimize-button"
       style={{
-        width: "340px",
-        height: "600px",
-        position: "fixed",
-        bottom: "20px",
-        right: "20px",
-        border: "1px solid #ccc",
-        zIndex: 1000,
-        backgroundColor: "white",
-        borderRadius: "4px",
-        boxShadow: "0 2px 10px rgba(0,0,0,0.1)"
+        position: "absolute",
+        top: "-50px",
+        right: "-35px",
+        background: "transparent",
+        border: "none",
+        cursor: "pointer",
+        fontSize: "26px",
+        color: "#666",
       }}
-    />
+    >
+      ▶️
+    </button>
+  </div>
 
+  {/* Maximize button (only shown when minimized) */}
+  {isCCPMinimized && (
+    <button
+      onClick={() => setIsCCPMinimized(false)}
+      style={{
+        position: "fixed",
+        right: "0",
+        bottom: "20px",
+        width: "40px",
+        height: "40px",
+        background: "white",
+        border: "1px solid #ccc",
+        borderRadius: "4px 0 0 4px",
+        cursor: "pointer",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        boxShadow: "0 2px 5px rgba(0,0,0,0.1)",
+        zIndex: 1000,
+      }}
+    >
+      ◀️
+    </button>
+  )}
+  
       <div className="p-6 bg-gray-100 overflow-y-auto" style={{ height: '100vh' }}>
         {renderExcelTable()}
       </div>
     </div>
   );
+  
+  
+  
+  
+  
+  
+  
 }
 
 export default App;
