@@ -14,7 +14,6 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from botocore.exceptions import ClientError, BotoCoreError
 import uuid
-import aioboto3
 import asyncio
 import hashlib
 import re
@@ -788,37 +787,6 @@ async def get_call_status(contact_id: str):
     if contact_id not in call_status_store:
         raise HTTPException(status_code=404, detail="Contact ID not found")
     return call_status_store[contact_id]
-    
-# Modified transcription handling
-async def handle_transcription(contact_id):
-    session = aioboto3.Session()
-    transcribe = session.client('transcribe-streaming', region_name=os.getenv("AWS_REGION"))
-    
-    try:
-        stream = await transcribe.start_stream_transcription(
-            LanguageCode='en-US',
-            MediaEncoding='pcm',
-            MediaSampleRateHertz=8000,
-            EnableChannelIdentification=True,
-            NumberOfChannels=1,
-        )
-        
-        transcription_sessions[contact_id] = {
-            'stream': stream,
-            'transcript': ''
-        }
-        
-        async for event in stream.TranscriptResultStream:
-            results = event['Transcript']['Results']
-            if results:
-                transcript = results[0]['Alternatives'][0]['Transcript']
-                transcription_sessions[contact_id]['transcript'] += transcript + ' '
-                
-    except Exception as e:
-        print(f"Transcription error: {str(e)}")
-    finally:
-        if contact_id in transcription_sessions:
-            del transcription_sessions[contact_id]
 
 # Run the server
 if __name__ == "__main__":
