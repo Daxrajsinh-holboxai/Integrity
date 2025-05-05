@@ -126,7 +126,7 @@ async def voice_websocket(websocket: WebSocket):
     voice_clients.add(websocket)
     try:
         while True:
-            # Keep connection alive
+            # Keep connection alive...
             message = await websocket.receive_text()
             print(f"Received message: {message}")
     except WebSocketDisconnect:

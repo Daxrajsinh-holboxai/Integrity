@@ -536,27 +536,48 @@ useEffect(() => {
 }, []);
 
 const playVoiceResponse = useCallback(async (responseText) => {
-  addNotification(`Playing voice response for: ${responseText}`, 'audio');
+  addNotification(`Playing voice response: ${responseText}`, 'audio');
   
   try {
+    // 1. Validate agent
     if (!agentRef.current) {
       addNotification('Agent not initialized', 'error');
       return false;
     }
 
+    // 2. Unmute immediately
     await agentRef.current.unmute();
-    addNotification('Unmuted for voice response', 'info');
+    addNotification('Microphone unmuted', 'info');
 
+    // 3. Trigger audio playback
     const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
-    await axios.post(`${apiBaseUrl}/trigger-voice`, { 
-      text: responseText 
-    });
+    await axios.post(`${apiBaseUrl}/trigger-voice`, { text: responseText });
 
-    await agentRef.current.mute();
-    addNotification('Voice response completed', 'success');
+    // 4. Smart mute delay (min 3s, max 10s)
+    const estimatedDuration = Math.min(
+      10000, // Maximum 10s cap
+      Math.max(
+        3000, // Minimum 3s
+        responseText.length * 200 + 1000 // Base delay + 1s buffer
+      )
+    );
+
+    console.log(`Scheduling mute after ${estimatedDuration}ms`);
+    
+    setTimeout(async () => {
+      try {
+        await agentRef.current.mute();
+        addNotification('Microphone muted', 'success');
+      } catch (muteError) {
+        console.error('Mute failed:', muteError);
+        addNotification('Mute failed - retrying...', 'error');
+        // Optional: Add retry logic here
+      }
+    }, estimatedDuration);
+
   } catch (error) {
-    console.error('Failed to send voice response:', error);
-    addNotification('Failed to send voice response', 'error');
+    console.error('Voice response failed:', error);
+    addNotification('Voice response failed', 'error');
   }
 }, [addNotification]);
 
